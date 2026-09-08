@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 
 from data.dexscreener import get_token_data
 from security.goplus import get_token_security
+from scoring.security_score import calculate_security_score
 
 
 load_dotenv()
@@ -16,10 +17,6 @@ if not TOKEN:
     raise RuntimeError("DISCORD_BOT_TOKEN غير موجود")
 
 
-def is_enabled(value):
-    return value in ("1", 1, True)
-
-
 def format_money(value):
     try:
         return f"${float(value):,.2f}"
@@ -27,194 +24,116 @@ def format_money(value):
         return "غير متوفر"
 
 
-def format_percent(value):
-    try:
-        return f"{float(value) * 100:.2f}%"
-    except (TypeError, ValueError):
-        return "غير متوفر"
-
-
 def get_security_result(data, mint):
     """
-    استخراج نتيجة العملة من استجابة GoPlus.
+    استخراج بيانات التوكن من استجابة GoPlus.
+    يدعم أكثر من شكل محتمل للاستجابة.
     """
-    if not data:
+
+    if not isinstance(data, dict):
         return None
 
     result = data.get("result")
 
-    if not isinstance(result, dict):
+    if not result:
         return None
 
-    # بعض استجابات GoPlus تستخدم عنوان الـ mint كمفتاح.
-    token_data = result.get(mint)
+    # الشكل الشائع:
+    # result = {mint_address: {...}}
+    if isinstance(result, dict):
 
-    if isinstance(token_data, dict):
-        return token_data
+        token_data = result.get(mint)
 
-    # حماية إضافية إذا تغير شكل الاستجابة.
-    if len(result) == 1:
-        first_value = next(iter(result.values()))
+        if isinstance(token_data, dict):
+            return token_data
 
-        if isinstance(first_value, dict):
-            return first_value
+        # البحث عن العنوان بدون حساسية لحالة الأحرف
+        for key, value in result.items():
+
+            if str(key).lower() == mint.lower():
+
+                if isinstance(value, dict):
+                    return value
+
+        # إذا كان result نفسه يحتوي بيانات التوكن
+        token_fields = {
+            "mintable",
+            "freezable",
+            "holders",
+            "metadata_mutable",
+            "balance_mutable_authority",
+            "transfer_fee",
+            "transfer_hook",
+        }
+
+        if any(
+            field in result
+            for field in token_fields
+        ):
+            return result
+
+        # حماية إضافية إذا كان هناك عنصر واحد
+        if len(result) == 1:
+
+            first_value = next(
+                iter(result.values())
+            )
+
+            if isinstance(first_value, dict):
+                return first_value
+
+    # بعض الاستجابات قد تكون List
+    if isinstance(result, list):
+
+        for item in result:
+
+            if not isinstance(item, dict):
+                continue
+
+            address = (
+                item.get("contract_address")
+                or item.get("address")
+                or item.get("mint")
+            )
+
+            if address:
+
+                if str(address).lower() == mint.lower():
+                    return item
+
+        if len(result) == 1:
+
+            if isinstance(result[0], dict):
+                return result[0]
 
     return None
-
-
-def analyze_security(security):
-    """
-    تحليل أمني أولي deterministic.
-    لا يعتبر البيانات المفقودة آمنة.
-    """
-
-    critical = []
-    warnings = []
-
-    # صلاحية إنشاء Tokens جديدة
-    mintable = security.get("mintable", {})
-    if isinstance(mintable, dict) and is_enabled(mintable.get("status")):
-        critical.append("صلاحية Mint ما زالت مفعلة")
-
-    # صلاحية تجميد الحسابات
-    freezable = security.get("freezable", {})
-    if isinstance(freezable, dict) and is_enabled(freezable.get("status")):
-        critical.append("صلاحية Freeze ما زالت مفعلة")
-
-    # إمكانية إغلاق البرنامج
-    closable = security.get("closable", {})
-    if isinstance(closable, dict) and is_enabled(closable.get("status")):
-        warnings.append("إمكانية إغلاق برنامج التوكن موجودة")
-
-    # إمكانية تعديل أرصدة المستخدمين
-    balance_mutable = security.get(
-        "balance_mutable_authority"
-    )
-
-    if isinstance(balance_mutable, dict):
-        if is_enabled(balance_mutable.get("status")):
-            critical.append(
-                "هناك صلاحية محتملة لتعديل أرصدة المستخدمين"
-            )
-
-    # Metadata قابلة للتعديل
-    metadata_mutable = security.get("metadata_mutable", {})
-
-    if isinstance(metadata_mutable, dict):
-        if is_enabled(metadata_mutable.get("status")):
-            warnings.append(
-                "بيانات التوكن Metadata قابلة للتعديل"
-            )
-
-    # Token غير قابل للتحويل
-    if is_enabled(security.get("non_transferable")):
-        critical.append(
-            "التوكن غير قابل للتحويل"
-        )
-
-    # Transfer Hook
-    transfer_hook = security.get("transfer_hook")
-
-    if isinstance(transfer_hook, dict):
-        if is_enabled(transfer_hook.get("malicious_address")):
-            critical.append(
-                "Transfer Hook مرتبط بعنوان مصنف ضار"
-            )
-
-    # رسوم التحويل
-    transfer_fee = security.get("transfer_fee")
-
-    if isinstance(transfer_fee, dict):
-        current_fee = transfer_fee.get("current_fee_rate")
-
-        try:
-            if current_fee is not None:
-                fee = float(current_fee)
-
-                if fee > 100:
-                    warnings.append(
-                        f"رسوم تحويل مرتفعة: {fee / 100:.2f}%"
-                    )
-        except (TypeError, ValueError):
-            pass
-
-    # تحليل Top Holders
-    holders = security.get("holders", [])
-
-    top1_percent = 0.0
-    top10_percent = 0.0
-
-    if isinstance(holders, list):
-        percentages = []
-
-        for holder in holders[:10]:
-            try:
-                percent = float(
-                    holder.get("percent", 0)
-                )
-            except (TypeError, ValueError):
-                percent = 0
-
-            # GoPlus قد يعرض النسبة كـ 0.1 = 10%
-            if percent <= 1:
-                percent *= 100
-
-            percentages.append(percent)
-
-        if percentages:
-            top1_percent = percentages[0]
-            top10_percent = sum(percentages)
-
-    if top1_percent >= 50:
-        critical.append(
-            f"تركيز مرتفع جدًا: أكبر حامل يملك {top1_percent:.2f}%"
-        )
-    elif top1_percent >= 20:
-        warnings.append(
-            f"تركيز مرتفع: أكبر حامل يملك {top1_percent:.2f}%"
-        )
-
-    if top10_percent >= 80:
-        critical.append(
-            f"تركيز شديد: أكبر 10 حامليْن يملكون {top10_percent:.2f}%"
-        )
-    elif top10_percent >= 50:
-        warnings.append(
-            f"تركيز ملحوظ: أكبر 10 حامليْن يملكون {top10_percent:.2f}%"
-        )
-
-    # تحديد الحالة
-    if critical:
-        status = "🔴 خطر مرتفع"
-    elif warnings:
-        status = "🟠 تحذير"
-    else:
-        status = "🟢 لا توجد مؤشرات حرجة في الفحص الأولي"
-
-    return {
-        "status": status,
-        "critical": critical,
-        "warnings": warnings,
-        "top1": top1_percent,
-        "top10": top10_percent,
-    }
 
 
 class MemeIntelligenceBot(discord.Client):
 
     def __init__(self):
+
         intents = discord.Intents.default()
+
         intents.message_content = True
 
-        super().__init__(intents=intents)
+        super().__init__(
+            intents=intents
+        )
 
-        self.tree = app_commands.CommandTree(self)
+        self.tree = app_commands.CommandTree(
+            self
+        )
 
     async def setup_hook(self):
+
         await self.tree.sync()
 
     async def on_ready(self):
-        print(f"تم تشغيل البوت: {self.user}")
+
+        print(
+            f"تم تشغيل البوت: {self.user}"
+        )
 
 
 bot = MemeIntelligenceBot()
@@ -224,7 +143,9 @@ bot = MemeIntelligenceBot()
     name="ping",
     description="اختبار اتصال البوت"
 )
-async def ping(interaction: discord.Interaction):
+async def ping(
+    interaction: discord.Interaction
+):
 
     await interaction.response.send_message(
         "🟢 البوت يعمل بشكل صحيح."
@@ -254,12 +175,18 @@ async def token(
         pair = await get_token_data(mint)
 
         if not pair:
+
             await interaction.followup.send(
-                "❌ لم يتم العثور على بيانات سوق لهذه العملة على Solana."
+                "❌ لم يتم العثور على بيانات سوق "
+                "لهذه العملة على Solana."
             )
+
             return
 
-        base_token = pair.get("baseToken", {})
+        base_token = pair.get(
+            "baseToken",
+            {}
+        )
 
         name = base_token.get(
             "name",
@@ -327,10 +254,12 @@ async def token(
         )
 
         # ==========================================
-        # 2. فحص GoPlus
+        # 2. GoPlus Security
         # ==========================================
 
-        security_response = await get_token_security(mint)
+        security_response = await get_token_security(
+            mint
+        )
 
         security = get_security_result(
             security_response,
@@ -338,49 +267,78 @@ async def token(
         )
 
         # ==========================================
-        # 3. الرسالة
+        # 3. بداية الرسالة
         # ==========================================
 
         message = (
             "🧠 **Meme Intelligence — تحليل أولي**\n\n"
 
             f"🪙 **العملة:** `{name}`\n"
-            f"**الرمز:** `${symbol}`\n"
-            f"**السعر:** `{price_usd}$`\n\n"
+            f"🏷️ **الرمز:** `${symbol}`\n"
+            f"💵 **السعر:** `${price_usd}`\n\n"
 
             "━━━━━━━━━━━━━━━━━━\n"
             "📊 **بيانات السوق**\n\n"
 
-            f"💧 **السيولة:** `{format_money(liquidity_usd)}`\n"
-            f"📈 **حجم 24س:** `{format_money(volume_24h)}`\n"
-            f"📉 **تغير 24س:** `{change_24h}%`\n"
+            f"💧 **السيولة:** "
+            f"`{format_money(liquidity_usd)}`\n"
+
+            f"📈 **حجم 24س:** "
+            f"`{format_money(volume_24h)}`\n"
+
+            f"📉 **تغير 24س:** "
+            f"`{change_24h}%`\n"
+
             f"🟢 **شراء 24س:** `{buys}`\n"
             f"🔴 **بيع 24س:** `{sells}`\n\n"
         )
+
+        # ==========================================
+        # 4. الفحص الأمني
+        # ==========================================
 
         if security is None:
 
             message += (
                 "━━━━━━━━━━━━━━━━━━\n"
                 "🛡️ **الفحص الأمني**\n\n"
-                "⚠️ لم يتم الحصول على بيانات أمنية كافية.\n"
-                "لا يتم اعتبار غياب البيانات دليلًا على الأمان.\n"
+
+                "⚠️ لم يتم الحصول على بيانات "
+                "أمنية كافية.\n"
+
+                "لا يتم اعتبار غياب البيانات "
+                "دليلًا على الأمان.\n"
             )
 
         else:
 
-            analysis = analyze_security(
+            analysis = calculate_security_score(
                 security
             )
 
+            score = analysis["score"]
+
+            grade = analysis["grade"]
+
             message += (
                 "━━━━━━━━━━━━━━━━━━\n"
-                "🛡️ **الفحص الأمني الأولي**\n\n"
+                "🛡️ **Security Score**\n\n"
 
-                f"**الحالة:** {analysis['status']}\n"
-                f"👤 **أكبر حامل:** `{analysis['top1']:.2f}%`\n"
-                f"👥 **أكبر 10 حامليْن:** `{analysis['top10']:.2f}%`\n\n"
+                f"🎯 **درجة الأمان:** "
+                f"`{score}/100`\n"
+
+                f"📋 **التقييم:** {grade}\n\n"
+
+                f"👤 **أكبر حامل:** "
+                f"`{analysis['top1']:.2f}%`\n"
+
+                f"👥 **أكبر 10 حامليْن:** "
+                f"`{analysis['top10']:.2f}%`\n\n"
             )
+
+            # ======================================
+            # مؤشرات حرجة
+            # ======================================
 
             if analysis["critical"]:
 
@@ -388,10 +346,19 @@ async def token(
                     "🚨 **مؤشرات حرجة:**\n"
                 )
 
-                for item in analysis["critical"][:5]:
-                    message += f"• {item}\n"
+                for item in analysis[
+                    "critical"
+                ][:5]:
+
+                    message += (
+                        f"• {item}\n"
+                    )
 
                 message += "\n"
+
+            # ======================================
+            # تحذيرات
+            # ======================================
 
             if analysis["warnings"]:
 
@@ -399,24 +366,53 @@ async def token(
                     "⚠️ **تحذيرات:**\n"
                 )
 
-                for item in analysis["warnings"][:5]:
-                    message += f"• {item}\n"
+                for item in analysis[
+                    "warnings"
+                ][:5]:
+
+                    message += (
+                        f"• {item}\n"
+                    )
 
                 message += "\n"
 
-            if (
-                not analysis["critical"]
-                and not analysis["warnings"]
-            ):
+            # ======================================
+            # نقاط إيجابية
+            # ======================================
+
+            if analysis["positive"]:
 
                 message += (
-                    "لم تظهر مؤشرات حرجة في الفحص الأولي.\n"
+                    "✅ **نقاط إيجابية:**\n"
                 )
 
+                for item in analysis[
+                    "positive"
+                ][:5]:
+
+                    message += (
+                        f"• {item}\n"
+                    )
+
+                message += "\n"
+
+        # ==========================================
+        # 5. الرابط
+        # ==========================================
+
+        pair_url = pair.get(
+            "url",
+            "غير متوفر"
+        )
+
         message += (
-            "\n━━━━━━━━━━━━━━━━━━\n"
-            "⚠️ **ملاحظة:** هذا فحص أولي وليس توصية شراء أو ضمانًا للربح.\n\n"
-            f"🔗 {pair.get('url', 'غير متوفر')}"
+            "━━━━━━━━━━━━━━━━━━\n"
+
+            "⚠️ **ملاحظة:**\n"
+            "هذا تحليل آلي أولي وليس توصية "
+            "شراء أو ضمانًا للربح.\n\n"
+
+            f"🔗 **السوق:** {pair_url}"
         )
 
         await interaction.followup.send(
@@ -430,7 +426,7 @@ async def token(
         )
 
         await interaction.followup.send(
-            "⚠️ حدث خطأ أثناء الفحص. "
+            "⚠️ حدث خطأ أثناء الفحص.\n"
             "تحقق من سجلات Railway لمعرفة التفاصيل."
         )
 
