@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from data.dexscreener import get_token_data
 from security.goplus import get_token_security
 from scoring.security_score import calculate_security_score
+from scoring.liquidity_score import calculate_liquidity_score
 
 
 load_dotenv()
@@ -38,8 +39,6 @@ def get_security_result(data, mint):
     if not result:
         return None
 
-    # الشكل الشائع:
-    # result = {mint_address: {...}}
     if isinstance(result, dict):
 
         token_data = result.get(mint)
@@ -47,7 +46,6 @@ def get_security_result(data, mint):
         if isinstance(token_data, dict):
             return token_data
 
-        # البحث عن العنوان بدون حساسية لحالة الأحرف
         for key, value in result.items():
 
             if str(key).lower() == mint.lower():
@@ -55,7 +53,6 @@ def get_security_result(data, mint):
                 if isinstance(value, dict):
                     return value
 
-        # إذا كان result نفسه يحتوي بيانات التوكن
         token_fields = {
             "mintable",
             "freezable",
@@ -72,7 +69,6 @@ def get_security_result(data, mint):
         ):
             return result
 
-        # حماية إضافية إذا كان هناك عنصر واحد
         if len(result) == 1:
 
             first_value = next(
@@ -82,7 +78,6 @@ def get_security_result(data, mint):
             if isinstance(first_value, dict):
                 return first_value
 
-    # بعض الاستجابات قد تكون List
     if isinstance(result, list):
 
         for item in result:
@@ -154,7 +149,7 @@ async def ping(
 
 @bot.tree.command(
     name="token",
-    description="فحص السوق والأمان لعملة Solana"
+    description="فحص السوق والأمان والسيولة لعملة Solana"
 )
 @app_commands.describe(
     mint="عنوان Mint الخاص بالعملة"
@@ -223,38 +218,44 @@ async def token(
             {}
         )
 
-        liquidity_usd = liquidity.get(
-            "usd",
-            0
+        liquidity_usd = (
+            liquidity.get("usd", 0)
+            if isinstance(liquidity, dict)
+            else 0
         )
 
-        volume_24h = volume.get(
-            "h24",
-            0
+        volume_24h = (
+            volume.get("h24", 0)
+            if isinstance(volume, dict)
+            else 0
         )
 
-        change_24h = price_change.get(
-            "h24",
-            0
+        change_24h = (
+            price_change.get("h24", 0)
+            if isinstance(price_change, dict)
+            else 0
         )
 
-        txns_24h = txns.get(
-            "h24",
-            {}
+        txns_24h = (
+            txns.get("h24", {})
+            if isinstance(txns, dict)
+            else {}
         )
 
-        buys = txns_24h.get(
-            "buys",
-            0
+        buys = (
+            txns_24h.get("buys", 0)
+            if isinstance(txns_24h, dict)
+            else 0
         )
 
-        sells = txns_24h.get(
-            "sells",
-            0
+        sells = (
+            txns_24h.get("sells", 0)
+            if isinstance(txns_24h, dict)
+            else 0
         )
 
         # ==========================================
-        # 2. GoPlus Security
+        # 2. Security Analysis
         # ==========================================
 
         security_response = await get_token_security(
@@ -266,8 +267,28 @@ async def token(
             mint
         )
 
+        security_analysis = None
+
+        if security is not None:
+
+            security_analysis = (
+                calculate_security_score(
+                    security
+                )
+            )
+
         # ==========================================
-        # 3. بداية الرسالة
+        # 3. Liquidity Analysis
+        # ==========================================
+
+        liquidity_analysis = (
+            calculate_liquidity_score(
+                pair
+            )
+        )
+
+        # ==========================================
+        # 4. بداية الرسالة
         # ==========================================
 
         message = (
@@ -294,31 +315,27 @@ async def token(
         )
 
         # ==========================================
-        # 4. الفحص الأمني
+        # 5. Security Score
         # ==========================================
 
-        if security is None:
+        if security_analysis is None:
 
             message += (
                 "━━━━━━━━━━━━━━━━━━\n"
-                "🛡️ **الفحص الأمني**\n\n"
+                "🛡️ **Security Score**\n\n"
 
                 "⚠️ لم يتم الحصول على بيانات "
                 "أمنية كافية.\n"
 
                 "لا يتم اعتبار غياب البيانات "
-                "دليلًا على الأمان.\n"
+                "دليلًا على الأمان.\n\n"
             )
 
         else:
 
-            analysis = calculate_security_score(
-                security
-            )
+            score = security_analysis["score"]
 
-            score = analysis["score"]
-
-            grade = analysis["grade"]
+            grade = security_analysis["grade"]
 
             message += (
                 "━━━━━━━━━━━━━━━━━━\n"
@@ -330,23 +347,19 @@ async def token(
                 f"📋 **التقييم:** {grade}\n\n"
 
                 f"👤 **أكبر حامل:** "
-                f"`{analysis['top1']:.2f}%`\n"
+                f"`{security_analysis['top1']:.2f}%`\n"
 
                 f"👥 **أكبر 10 حامليْن:** "
-                f"`{analysis['top10']:.2f}%`\n\n"
+                f"`{security_analysis['top10']:.2f}%`\n\n"
             )
 
-            # ======================================
-            # مؤشرات حرجة
-            # ======================================
-
-            if analysis["critical"]:
+            if security_analysis["critical"]:
 
                 message += (
                     "🚨 **مؤشرات حرجة:**\n"
                 )
 
-                for item in analysis[
+                for item in security_analysis[
                     "critical"
                 ][:5]:
 
@@ -356,17 +369,13 @@ async def token(
 
                 message += "\n"
 
-            # ======================================
-            # تحذيرات
-            # ======================================
-
-            if analysis["warnings"]:
+            if security_analysis["warnings"]:
 
                 message += (
                     "⚠️ **تحذيرات:**\n"
                 )
 
-                for item in analysis[
+                for item in security_analysis[
                     "warnings"
                 ][:5]:
 
@@ -376,28 +385,72 @@ async def token(
 
                 message += "\n"
 
-            # ======================================
-            # نقاط إيجابية
-            # ======================================
+        # ==========================================
+        # 6. Liquidity Score
+        # ==========================================
 
-            if analysis["positive"]:
+        message += (
+            "━━━━━━━━━━━━━━━━━━\n"
+            "💧 **Liquidity Score**\n\n"
 
-                message += (
-                    "✅ **نقاط إيجابية:**\n"
-                )
+            f"🎯 **درجة السيولة:** "
+            f"`{liquidity_analysis['score']}/100`\n"
 
-                for item in analysis[
-                    "positive"
-                ][:5]:
+            f"📋 **التقييم:** "
+            f"{liquidity_analysis['grade']}\n\n"
 
-                    message += (
-                        f"• {item}\n"
-                    )
+            f"💧 **السيولة:** "
+            f"`{format_money(liquidity_analysis['liquidity_usd'])}`\n"
 
-                message += "\n"
+            f"📈 **حجم 24س:** "
+            f"`{format_money(liquidity_analysis['volume_24h'])}`\n"
+
+            f"🔄 **الحجم/السيولة:** "
+            f"`{liquidity_analysis['volume_liquidity_ratio']:.3f}x`\n\n"
+        )
 
         # ==========================================
-        # 5. الرابط
+        # Liquidity Warnings
+        # ==========================================
+
+        if liquidity_analysis["warnings"]:
+
+            message += (
+                "⚠️ **ملاحظات السيولة:**\n"
+            )
+
+            for item in liquidity_analysis[
+                "warnings"
+            ][:5]:
+
+                message += (
+                    f"• {item}\n"
+                )
+
+            message += "\n"
+
+        # ==========================================
+        # Liquidity Positive Points
+        # ==========================================
+
+        if liquidity_analysis["positive"]:
+
+            message += (
+                "✅ **نقاط السيولة الإيجابية:**\n"
+            )
+
+            for item in liquidity_analysis[
+                "positive"
+            ][:5]:
+
+                message += (
+                    f"• {item}\n"
+                )
+
+            message += "\n"
+
+        # ==========================================
+        # 7. الرابط والملاحظة
         # ==========================================
 
         pair_url = pair.get(
