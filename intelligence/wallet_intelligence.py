@@ -1,5 +1,5 @@
 import os
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import aiohttp
 from dotenv import load_dotenv
@@ -8,12 +8,18 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-HELIUS_API_KEY = os.getenv("HELIUS_API_KEY")
+HELIUS_API_KEY = os.getenv(
+    "HELIUS_API_KEY"
+)
 
 HELIUS_RPC_URL = (
     "https://mainnet.helius-rpc.com/"
 )
 
+
+# ============================================================
+# Helius RPC
+# ============================================================
 
 async def helius_rpc(
     method: str,
@@ -77,6 +83,10 @@ async def helius_rpc(
             return data
 
 
+# ============================================================
+# Wallet signatures
+# ============================================================
+
 async def get_wallet_signatures(
     wallet_address: str,
     limit: int = 20,
@@ -117,9 +127,13 @@ async def get_wallet_signatures(
     return result
 
 
+# ============================================================
+# Transaction
+# ============================================================
+
 async def get_transaction(
     signature: str,
-) -> Dict[str, Any] | None:
+) -> Optional[Dict[str, Any]]:
     """
     جلب تفاصيل معاملة واحدة.
     """
@@ -151,6 +165,10 @@ async def get_transaction(
 
     return result
 
+
+# ============================================================
+# Wallet transactions
+# ============================================================
 
 async def get_wallet_transactions(
     wallet_address: str,
@@ -209,15 +227,21 @@ async def get_wallet_transactions(
         )
 
         transaction["_status"] = (
-            item.get("confirmationStatus")
+            item.get(
+                "confirmationStatus"
+            )
         )
 
         transaction["_slot"] = (
-            item.get("slot")
+            item.get(
+                "slot"
+            )
         )
 
         transaction["_block_time"] = (
-            item.get("blockTime")
+            item.get(
+                "blockTime"
+            )
         )
 
         transactions.append(
@@ -227,11 +251,16 @@ async def get_wallet_transactions(
     return transactions
 
 
+# ============================================================
+# Safe helpers
+# ============================================================
+
 def _safe_number(
     value: Any,
 ) -> float:
 
     try:
+
         return float(value)
 
     except (
@@ -242,12 +271,129 @@ def _safe_number(
         return 0.0
 
 
-def _extract_token_changes(
+def _safe_int(
+    value: Any,
+) -> int:
+
+    try:
+
+        return int(value)
+
+    except (
+        TypeError,
+        ValueError
+    ):
+
+        return 0
+
+
+# ============================================================
+# Token balance extraction
+# ============================================================
+
+def _extract_token_balance_amount(
+    item: Dict[str, Any],
+) -> int:
+    """
+    استخراج الكمية الخام للتوكن.
+
+    نستخدم amount بدل uiAmount
+    لتجنب مشاكل الدقة العشرية.
+    """
+
+    if not isinstance(
+        item,
+        dict
+    ):
+        return 0
+
+    ui_token_amount = item.get(
+        "uiTokenAmount",
+        {}
+    )
+
+    if not isinstance(
+        ui_token_amount,
+        dict
+    ):
+        return 0
+
+    amount = ui_token_amount.get(
+        "amount"
+    )
+
+    return _safe_int(
+        amount
+    )
+
+
+def _extract_token_balance_decimals(
+    item: Dict[str, Any],
+) -> int:
+    """
+    استخراج عدد المنازل العشرية للتوكن.
+    """
+
+    if not isinstance(
+        item,
+        dict
+    ):
+        return 0
+
+    ui_token_amount = item.get(
+        "uiTokenAmount",
+        {}
+    )
+
+    if not isinstance(
+        ui_token_amount,
+        dict
+    ):
+        return 0
+
+    return _safe_int(
+        ui_token_amount.get(
+            "decimals",
+            0
+        )
+    )
+
+
+def _raw_to_ui_amount(
+    amount: int,
+    decimals: int,
+) -> float:
+    """
+    تحويل الكمية الخام إلى كمية قابلة للعرض.
+    """
+
+    if decimals < 0:
+        decimals = 0
+
+    return amount / (
+        10 ** decimals
+    )
+
+
+# ============================================================
+# Token balance changes - generic
+# ============================================================
+
+def _extract_token_balance_changes(
     transaction: Dict[str, Any],
-) -> Dict[str, Any]:
+) -> List[Dict[str, Any]]:
     """
-    استخراج التغيرات الأساسية في أرصدة التوكنات.
+    استخراج تغيّر أرصدة التوكنات في معاملة واحدة.
+
+    كل نتيجة تمثل:
+    owner + mint + الرصيد السابق + الرصيد اللاحق + التغير.
     """
+
+    if not isinstance(
+        transaction,
+        dict
+    ):
+        return []
 
     meta = transaction.get(
         "meta"
@@ -257,11 +403,7 @@ def _extract_token_changes(
         meta,
         dict
     ):
-        return {
-            "token_changes": 0,
-            "positive_token_changes": 0,
-            "negative_token_changes": 0,
-        }
+        return []
 
     pre = meta.get(
         "preTokenBalances",
@@ -273,14 +415,33 @@ def _extract_token_changes(
         []
     )
 
-    if not isinstance(pre, list):
+    if not isinstance(
+        pre,
+        list
+    ):
         pre = []
 
-    if not isinstance(post, list):
+    if not isinstance(
+        post,
+        list
+    ):
         post = []
 
-    pre_balances = {}
-    post_balances = {}
+    # --------------------------------------------------------
+    # تجميع حسب owner + mint
+    # لأن المحفظة قد تملك أكثر من Token Account
+    # لنفس التوكن.
+    # --------------------------------------------------------
+
+    before: Dict[
+        tuple,
+        Dict[str, Any]
+    ] = {}
+
+    after: Dict[
+        tuple,
+        Dict[str, Any]
+    ] = {}
 
     for item in pre:
 
@@ -290,19 +451,56 @@ def _extract_token_changes(
         ):
             continue
 
-        account_index = item.get(
-            "accountIndex"
+        owner = item.get(
+            "owner"
+        )
+
+        mint = item.get(
+            "mint"
+        )
+
+        if not isinstance(
+            owner,
+            str
+        ):
+            continue
+
+        if not isinstance(
+            mint,
+            str
+        ):
+            continue
+
+        key = (
+            owner,
+            mint
         )
 
         amount = (
-            item
-            .get("uiTokenAmount", {})
-            .get("uiAmount")
+            _extract_token_balance_amount(
+                item
+            )
         )
 
-        pre_balances[
-            account_index
-        ] = _safe_number(amount)
+        decimals = (
+            _extract_token_balance_decimals(
+                item
+            )
+        )
+
+        if key not in before:
+
+            before[key] = {
+                "amount": 0,
+                "decimals": decimals,
+            }
+
+        before[key]["amount"] += amount
+
+        before[key]["decimals"] = max(
+            before[key]["decimals"],
+            decimals
+        )
 
     for item in post:
 
@@ -312,67 +510,497 @@ def _extract_token_changes(
         ):
             continue
 
-        account_index = item.get(
-            "accountIndex"
+        owner = item.get(
+            "owner"
+        )
+
+        mint = item.get(
+            "mint"
+        )
+
+        if not isinstance(
+            owner,
+            str
+        ):
+            continue
+
+        if not isinstance(
+            mint,
+            str
+        ):
+            continue
+
+        key = (
+            owner,
+            mint
         )
 
         amount = (
-            item
-            .get("uiTokenAmount", {})
-            .get("uiAmount")
+            _extract_token_balance_amount(
+                item
+            )
         )
 
-        post_balances[
-            account_index
-        ] = _safe_number(amount)
+        decimals = (
+            _extract_token_balance_decimals(
+                item
+            )
+        )
 
-    all_indexes = set(
-        pre_balances
-    ) | set(
-        post_balances
+        if key not in after:
+
+            after[key] = {
+                "amount": 0,
+                "decimals": decimals,
+            }
+
+        after[key]["amount"] += amount
+
+        after[key]["decimals"] = max(
+            after[key]["decimals"],
+            decimals
+        )
+
+    # --------------------------------------------------------
+    # مقارنة قبل / بعد
+    # --------------------------------------------------------
+
+    keys = (
+        set(before.keys())
+        | set(after.keys())
     )
 
-    token_changes = 0
+    changes = []
+
+    for owner, mint in keys:
+
+        before_data = before.get(
+            (owner, mint),
+            {
+                "amount": 0,
+                "decimals": 0,
+            }
+        )
+
+        after_data = after.get(
+            (owner, mint),
+            {
+                "amount": 0,
+                "decimals": 0,
+            }
+        )
+
+        before_amount = _safe_int(
+            before_data.get(
+                "amount"
+            )
+        )
+
+        after_amount = _safe_int(
+            after_data.get(
+                "amount"
+            )
+        )
+
+        decimals = max(
+            _safe_int(
+                before_data.get(
+                    "decimals"
+                )
+            ),
+            _safe_int(
+                after_data.get(
+                    "decimals"
+                )
+            )
+        )
+
+        change = (
+            after_amount
+            - before_amount
+        )
+
+        if change == 0:
+            continue
+
+        changes.append(
+            {
+                "owner": owner,
+                "mint": mint,
+
+                "before_raw": (
+                    before_amount
+                ),
+
+                "after_raw": (
+                    after_amount
+                ),
+
+                "change_raw": change,
+
+                "before_amount": (
+                    _raw_to_ui_amount(
+                        before_amount,
+                        decimals
+                    )
+                ),
+
+                "after_amount": (
+                    _raw_to_ui_amount(
+                        after_amount,
+                        decimals
+                    )
+                ),
+
+                "change_amount": (
+                    _raw_to_ui_amount(
+                        change,
+                        decimals
+                    )
+                ),
+
+                "decimals": decimals,
+
+                "direction": (
+                    "in"
+                    if change > 0
+                    else "out"
+                ),
+            }
+        )
+
+    return changes
+
+
+# ============================================================
+# Wallet token balance changes
+# ============================================================
+
+def analyze_wallet_token_balance_changes(
+    transactions: List[Dict[str, Any]],
+    wallet_address: str,
+    mint_address: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    تحليل تغيّر رصيد توكن معين لمحفظة معينة.
+
+    هذا التحليل يجيب عن:
+
+    - هل زاد رصيد التوكن؟
+    - هل انخفض؟
+    - كم دخل؟
+    - كم خرج؟
+    - ما هو صافي التغير؟
+    - كم عدد عمليات الدخول والخروج؟
+    """
+
+    if not isinstance(
+        transactions,
+        list
+    ):
+        transactions = []
+
+    if not wallet_address:
+
+        return {
+            "wallet": wallet_address,
+            "mint": mint_address,
+            "transaction_count": 0,
+            "balance_changes": [],
+            "total_in": 0.0,
+            "total_out": 0.0,
+            "net_change": 0.0,
+            "in_count": 0,
+            "out_count": 0,
+            "direction": "unknown",
+            "confidence": 0,
+            "warnings": [
+                "عنوان المحفظة غير موجود"
+            ],
+        }
+
+    balance_changes = []
+
+    for transaction in transactions:
+
+        changes = (
+            _extract_token_balance_changes(
+                transaction
+            )
+        )
+
+        for change in changes:
+
+            if change.get(
+                "owner"
+            ) != wallet_address:
+
+                continue
+
+            if (
+                mint_address
+                and change.get(
+                    "mint"
+                ) != mint_address
+            ):
+
+                continue
+
+            signature = transaction.get(
+                "_signature"
+            )
+
+            block_time = transaction.get(
+                "_block_time"
+            )
+
+            slot = transaction.get(
+                "_slot"
+            )
+
+            item = dict(
+                change
+            )
+
+            item["signature"] = (
+                signature
+            )
+
+            item["block_time"] = (
+                block_time
+            )
+
+            item["slot"] = (
+                slot
+            )
+
+            balance_changes.append(
+                item
+            )
+
+    total_in = 0.0
+    total_out = 0.0
+
+    in_count = 0
+    out_count = 0
+
+    for item in balance_changes:
+
+        change_amount = _safe_number(
+            item.get(
+                "change_amount"
+            )
+        )
+
+        if change_amount > 0:
+
+            total_in += change_amount
+            in_count += 1
+
+        elif change_amount < 0:
+
+            total_out += abs(
+                change_amount
+            )
+            out_count += 1
+
+    net_change = (
+        total_in
+        - total_out
+    )
+
+    if net_change > 0:
+
+        direction = "in"
+
+    elif net_change < 0:
+
+        direction = "out"
+
+    else:
+
+        direction = "neutral"
+
+    # --------------------------------------------------------
+    # Confidence
+    # --------------------------------------------------------
+
+    confidence = 0
+
+    if len(transactions) >= 5:
+        confidence += 20
+
+    if len(transactions) >= 15:
+        confidence += 20
+
+    if len(transactions) >= 20:
+        confidence += 20
+
+    if len(balance_changes) >= 1:
+        confidence += 20
+
+    if len(balance_changes) >= 3:
+        confidence += 10
+
+    if len(balance_changes) >= 5:
+        confidence += 10
+
+    confidence = min(
+        confidence,
+        100
+    )
+
+    warnings = []
+
+    if not transactions:
+
+        warnings.append(
+            "لا توجد معاملات للتحليل"
+        )
+
+    elif len(transactions) < 5:
+
+        warnings.append(
+            "العينة صغيرة"
+        )
+
+    if not balance_changes:
+
+        warnings.append(
+            "لم يتم رصد تغير واضح في رصيد التوكن"
+        )
+
+    # --------------------------------------------------------
+    # نتيجة التحليل
+    # --------------------------------------------------------
+
+    if net_change > 0:
+
+        interpretation = (
+            "الرصيد الصافي للتوكن ارتفع"
+        )
+
+    elif net_change < 0:
+
+        interpretation = (
+            "الرصيد الصافي للتوكن انخفض"
+        )
+
+    else:
+
+        interpretation = (
+            "لا يوجد تغير صافٍ واضح"
+        )
+
+    return {
+        "wallet": wallet_address,
+        "mint": mint_address,
+
+        "transaction_count": (
+            len(transactions)
+        ),
+
+        "balance_changes": (
+            balance_changes
+        ),
+
+        "balance_change_count": (
+            len(balance_changes)
+        ),
+
+        "in_count": in_count,
+        "out_count": out_count,
+
+        "total_in": round(
+            total_in,
+            12
+        ),
+
+        "total_out": round(
+            total_out,
+            12
+        ),
+
+        "net_change": round(
+            net_change,
+            12
+        ),
+
+        "direction": direction,
+
+        "interpretation": (
+            interpretation
+        ),
+
+        "confidence": confidence,
+
+        "warnings": warnings,
+    }
+
+
+# ============================================================
+# Generic token changes in transaction
+# ============================================================
+
+def _extract_token_changes(
+    transaction: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    إحصاء عام لتغيرات أرصدة التوكنات
+    داخل معاملة واحدة.
+    """
+
+    changes = (
+        _extract_token_balance_changes(
+            transaction
+        )
+    )
+
     positive_changes = 0
     negative_changes = 0
 
-    for index in all_indexes:
+    for change in changes:
 
-        before = pre_balances.get(
-            index,
-            0.0
+        direction = change.get(
+            "direction"
         )
 
-        after = post_balances.get(
-            index,
-            0.0
-        )
+        if direction == "in":
 
-        change = after - before
-
-        if abs(change) < 0.0000001:
-            continue
-
-        token_changes += 1
-
-        if change > 0:
             positive_changes += 1
 
-        else:
+        elif direction == "out":
+
             negative_changes += 1
 
     return {
-        "token_changes": token_changes,
-        "positive_token_changes": positive_changes,
-        "negative_token_changes": negative_changes,
+        "token_changes": len(
+            changes
+        ),
+
+        "positive_token_changes": (
+            positive_changes
+        ),
+
+        "negative_token_changes": (
+            negative_changes
+        ),
     }
 
+
+# ============================================================
+# SOL change
+# ============================================================
 
 def _extract_sol_change(
     transaction: Dict[str, Any],
 ) -> float:
     """
-    حساب التغير التقريبي في أرصدة SOL.
+    حساب التغير الإجمالي التقريبي في أرصدة SOL
+    داخل المعاملة.
+
+    ملاحظة:
+    هذا ليس تغير SOL لمحفظة محددة.
     """
 
     meta = transaction.get(
@@ -395,10 +1023,16 @@ def _extract_sol_change(
         []
     )
 
-    if not isinstance(pre, list):
+    if not isinstance(
+        pre,
+        list
+    ):
         pre = []
 
-    if not isinstance(post, list):
+    if not isinstance(
+        post,
+        list
+    ):
         post = []
 
     length = min(
@@ -422,8 +1056,15 @@ def _extract_sol_change(
             after - before
         )
 
-    return total_change / 1_000_000_000
+    return (
+        total_change
+        / 1_000_000_000
+    )
 
+
+# ============================================================
+# Extract candidate wallets
+# ============================================================
 
 def extract_wallets_from_transaction(
     transaction: Dict[str, Any]
@@ -433,6 +1074,7 @@ def extract_wallets_from_transaction(
     بتغييرات أرصدة التوكن.
 
     هذه المحافظ مرشحة فقط للتحليل اللاحق.
+
     لا تعتبر Smart Money.
     """
 
@@ -442,58 +1084,32 @@ def extract_wallets_from_transaction(
     ):
         return []
 
-    meta = transaction.get(
-        "meta"
+    changes = (
+        _extract_token_balance_changes(
+            transaction
+        )
     )
-
-    if not isinstance(
-        meta,
-        dict
-    ):
-        return []
 
     wallets = set()
 
-    for field in (
-        "preTokenBalances",
-        "postTokenBalances",
-    ):
+    for change in changes:
 
-        balances = meta.get(
-            field,
-            []
+        owner = change.get(
+            "owner"
         )
 
         if not isinstance(
-            balances,
-            list
+            owner,
+            str
         ):
             continue
 
-        for item in balances:
+        if len(owner) < 32:
+            continue
 
-            if not isinstance(
-                item,
-                dict
-            ):
-                continue
-
-            owner = item.get(
-                "owner"
-            )
-
-            if not isinstance(
-                owner,
-                str
-            ):
-                continue
-
-            if len(owner) < 32:
-                continue
-
-            wallets.add(
-                owner
-            )
+        wallets.add(
+            owner
+        )
 
     return sorted(
         wallets
@@ -528,6 +1144,10 @@ def extract_wallets_from_transactions(
         wallets
     )
 
+
+# ============================================================
+# Wallet activity analysis
+# ============================================================
 
 def analyze_wallet_activity(
     transactions: List[Dict[str, Any]]
@@ -746,37 +1366,62 @@ def analyze_wallet_activity(
 
     return {
         "activity_score": activity_score,
+
         "confidence": confidence,
-        "transaction_count": transaction_count,
+
+        "transaction_count": (
+            transaction_count
+        ),
+
         "successful_count": successful,
+
         "failed_count": failed,
+
         "success_ratio": round(
             success_ratio,
             3
         ),
+
         "failed_ratio": round(
             failed_ratio,
             3
         ),
-        "token_activity": token_activity,
+
+        "token_activity": (
+            token_activity
+        ),
+
         "positive_token_changes": (
             positive_token_changes
         ),
+
         "negative_token_changes": (
             negative_token_changes
         ),
+
         "sol_activity": sol_activity,
+
         "warnings": warnings,
+
         "positive": positive,
     }
 
 
+# ============================================================
+# Full wallet analysis
+# ============================================================
+
 async def analyze_wallet(
     wallet_address: str,
     transaction_limit: int = 20,
+    mint_address: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     جلب وتحليل محفظة واحدة.
+
+    إذا تم تمرير mint_address:
+    يتم أيضًا تحليل تغيّر رصيد ذلك التوكن
+    للمحفظة.
     """
 
     transactions = (
@@ -798,9 +1443,26 @@ async def analyze_wallet(
         )
     )
 
+    token_balance_analysis = (
+        analyze_wallet_token_balance_changes(
+            transactions,
+            wallet_address,
+            mint_address
+        )
+    )
+
     return {
         "wallet": wallet_address,
+
         "analysis": analysis,
-        "candidate_wallets": candidate_wallets,
+
+        "token_balance_analysis": (
+            token_balance_analysis
+        ),
+
+        "candidate_wallets": (
+            candidate_wallets
+        ),
+
         "transactions": transactions,
-            }
+    }
