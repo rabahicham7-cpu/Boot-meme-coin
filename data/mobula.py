@@ -46,7 +46,6 @@ async def _request(
     timeout = aiohttp.ClientTimeout(total=20)
 
     try:
-
         async with aiohttp.ClientSession(
             timeout=timeout
         ) as session:
@@ -271,8 +270,7 @@ async def get_wallet_funding(
     return await _request(
         "/wallet/funding",
         params={
-            "blockchain": "Solana",
-            "address": wallet_address,
+            "wallet": wallet_address,
         },
     )
 
@@ -292,4 +290,4 @@ async def get_wallet_labels(
             "blockchain": "Solana",
             "address": wallet_address,
         },
-  )
+    )
