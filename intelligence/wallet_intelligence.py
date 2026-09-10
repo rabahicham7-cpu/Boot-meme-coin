@@ -372,8 +372,7 @@ def _extract_sol_change(
     transaction: Dict[str, Any],
 ) -> float:
     """
-    حساب التغير التقريبي في رصيد SOL
-    للحسابات المذكورة في المعاملة.
+    حساب التغير التقريبي في أرصدة SOL.
     """
 
     meta = transaction.get(
@@ -426,6 +425,110 @@ def _extract_sol_change(
     return total_change / 1_000_000_000
 
 
+def extract_wallets_from_transaction(
+    transaction: Dict[str, Any]
+) -> List[str]:
+    """
+    استخراج عناوين المحافظ المرتبطة
+    بتغييرات أرصدة التوكن.
+
+    هذه المحافظ مرشحة فقط للتحليل اللاحق.
+    لا تعتبر Smart Money.
+    """
+
+    if not isinstance(
+        transaction,
+        dict
+    ):
+        return []
+
+    meta = transaction.get(
+        "meta"
+    )
+
+    if not isinstance(
+        meta,
+        dict
+    ):
+        return []
+
+    wallets = set()
+
+    for field in (
+        "preTokenBalances",
+        "postTokenBalances",
+    ):
+
+        balances = meta.get(
+            field,
+            []
+        )
+
+        if not isinstance(
+            balances,
+            list
+        ):
+            continue
+
+        for item in balances:
+
+            if not isinstance(
+                item,
+                dict
+            ):
+                continue
+
+            owner = item.get(
+                "owner"
+            )
+
+            if not isinstance(
+                owner,
+                str
+            ):
+                continue
+
+            if len(owner) < 32:
+                continue
+
+            wallets.add(
+                owner
+            )
+
+    return sorted(
+        wallets
+    )
+
+
+def extract_wallets_from_transactions(
+    transactions: List[Dict[str, Any]]
+) -> List[str]:
+    """
+    استخراج جميع المحافظ الفريدة
+    من مجموعة معاملات.
+    """
+
+    if not isinstance(
+        transactions,
+        list
+    ):
+        return []
+
+    wallets = set()
+
+    for transaction in transactions:
+
+        wallets.update(
+            extract_wallets_from_transaction(
+                transaction
+            )
+        )
+
+    return sorted(
+        wallets
+    )
+
+
 def analyze_wallet_activity(
     transactions: List[Dict[str, Any]]
 ) -> Dict[str, Any]:
@@ -453,8 +556,6 @@ def analyze_wallet_activity(
     negative_token_changes = 0
 
     sol_activity = 0
-
-    slots = []
 
     warnings = []
     positive = []
@@ -485,16 +586,6 @@ def analyze_wallet_activity(
             else:
 
                 failed += 1
-
-        slot = tx.get(
-            "_slot"
-        )
-
-        if isinstance(
-            slot,
-            int
-        ):
-            slots.append(slot)
 
         token_changes = (
             _extract_token_changes(
@@ -549,7 +640,6 @@ def analyze_wallet_activity(
 
     activity_score = 0
 
-    # حجم العينة
     if transaction_count >= 5:
         activity_score += 20
 
@@ -559,26 +649,24 @@ def analyze_wallet_activity(
     if transaction_count >= 20:
         activity_score += 10
 
-    # نشاط التوكنات
     if token_activity >= 3:
         activity_score += 15
 
     if token_activity >= 10:
         activity_score += 10
 
-    # نشاط SOL
     if sol_activity >= 5:
         activity_score += 10
 
-    # نجاح المعاملات
     if success_ratio >= 0.90:
         activity_score += 10
 
-    # المعاملات الفاشلة
     if failed_ratio > 0.30:
+
         activity_score -= 20
 
     elif failed_ratio > 0.10:
+
         activity_score -= 10
 
     activity_score = max(
@@ -625,7 +713,10 @@ def analyze_wallet_activity(
             f"تدفقات توكنات خارجة: {negative_token_changes}"
         )
 
-    if success_ratio >= 0.90 and transaction_count >= 5:
+    if (
+        success_ratio >= 0.90
+        and transaction_count >= 5
+    ):
 
         positive.append(
             "نسبة نجاح مرتفعة للمعاملات"
@@ -701,8 +792,15 @@ async def analyze_wallet(
         )
     )
 
+    candidate_wallets = (
+        extract_wallets_from_transactions(
+            transactions
+        )
+    )
+
     return {
         "wallet": wallet_address,
         "analysis": analysis,
+        "candidate_wallets": candidate_wallets,
         "transactions": transactions,
-                }
+            }
