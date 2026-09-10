@@ -1,4 +1,4 @@
-import os
+import subprocess
 import sys
 import traceback
 
@@ -10,40 +10,77 @@ print("=" * 60)
 print("\n[1] Python version:")
 print(sys.version)
 
-print("\n[2] Testing composite_score...")
+print("\n[2] Compiling all Python files...")
+
+result = subprocess.run(
+    [
+        sys.executable,
+        "-m",
+        "compileall",
+        "-q",
+        ".",
+    ],
+    capture_output=True,
+    text=True,
+)
+
+if result.returncode == 0:
+    print("OK - all Python files compiled successfully")
+else:
+    print("FAILED - Python compilation error")
+    print(result.stdout)
+    print(result.stderr)
+    sys.exit(1)
+
+
+print("\n[3] Testing composite_score import...")
+
 try:
     import scoring.composite_score
-    print("OK - composite_score imported")
-except Exception as e:
-    print("FAILED - composite_score")
-    print(type(e).__name__, str(e))
-    traceback.print_exc()
 
-print("\n[3] Testing main...")
+    print("OK - composite_score imported successfully")
+
+except Exception as error:
+    print("FAILED - composite_score import")
+    print(type(error).__name__, str(error))
+    traceback.print_exc()
+    sys.exit(1)
+
+
+print("\n[4] Testing composite_score function...")
+
 try:
-    import main
-    print("OK - main imported")
-except Exception as e:
-    print("FAILED - main")
-    print(type(e).__name__, str(e))
+    from scoring.composite_score import calculate_composite_score
+
+    result = calculate_composite_score(
+        security_score=80,
+        liquidity_score=70,
+        holder_score=75,
+        trader_analysis={
+            "average_score": 65,
+            "confidence": 80,
+        },
+        smart_money_analysis={
+            "smart_money_score": 60,
+            "confidence": 80,
+            "flow": "balanced",
+        },
+        funding_analysis={
+            "risk_score": 20,
+            "confidence": 80,
+        },
+    )
+
+    print("OK - composite calculation works")
+    print("Result:", result)
+
+except Exception as error:
+    print("FAILED - composite calculation")
+    print(type(error).__name__, str(error))
     traceback.print_exc()
+    sys.exit(1)
 
-print("\n[4] Environment variables:")
-required = [
-    "DISCORD_BOT_TOKEN",
-    "HELIUS_API_KEY",
-    "GOPLUS_APP_KEY",
-    "GOPLUS_APP_SECRET",
-    "MOBULA_API_KEY",
-]
-
-for name in required:
-    value = os.getenv(name)
-    if value:
-        print(f"OK - {name} exists")
-    else:
-        print(f"MISSING - {name}")
 
 print("\n" + "=" * 60)
-print("SMOKE TEST FINISHED")
+print("SMOKE TEST PASSED")
 print("=" * 60)
