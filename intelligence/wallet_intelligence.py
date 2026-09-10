@@ -1,5 +1,5 @@
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import aiohttp
 from dotenv import load_dotenv
@@ -10,20 +10,17 @@ load_dotenv()
 
 HELIUS_API_KEY = os.getenv("HELIUS_API_KEY")
 
-HELIUS_TRANSACTIONS_URL = (
-    "https://api.helius.xyz/v0/addresses"
+HELIUS_RPC_URL = (
+    "https://mainnet.helius-rpc.com/"
 )
 
 
-async def get_wallet_transactions(
-    wallet_address: str,
-    limit: int = 20,
-) -> List[Dict[str, Any]]:
+async def helius_rpc(
+    method: str,
+    params: List[Any],
+) -> Dict[str, Any]:
     """
-    جلب آخر معاملات محفظة Solana عبر Helius.
-
-    هذه الدالة تجمع البيانات الخام فقط.
-    لا تعتبر المحفظة Smart Money.
+    إرسال طلب JSON-RPC إلى Helius.
     """
 
     if not HELIUS_API_KEY:
@@ -31,23 +28,17 @@ async def get_wallet_transactions(
             "HELIUS_API_KEY غير موجود"
         )
 
-    if not wallet_address:
-        return []
-
-    limit = max(
-        1,
-        min(int(limit), 100)
-    )
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": method,
+        "params": params,
+    }
 
     url = (
-        f"{HELIUS_TRANSACTIONS_URL}/"
-        f"{wallet_address}/transactions"
+        f"{HELIUS_RPC_URL}"
+        f"?api-key={HELIUS_API_KEY}"
     )
-
-    params = {
-        "api-key": HELIUS_API_KEY,
-        "limit": limit,
-    }
 
     timeout = aiohttp.ClientTimeout(
         total=20
@@ -57,9 +48,12 @@ async def get_wallet_transactions(
         timeout=timeout
     ) as session:
 
-        async with session.get(
+        async with session.post(
             url,
-            params=params
+            json=payload,
+            headers={
+                "Content-Type": "application/json"
+            },
         ) as response:
 
             data = await response.json(
@@ -69,15 +63,367 @@ async def get_wallet_transactions(
             if response.status != 200:
 
                 raise RuntimeError(
-                    "Helius transactions HTTP error: "
+                    "Helius RPC HTTP error: "
                     f"{response.status} - {data}"
                 )
 
-            if not isinstance(data, list):
+            if "error" in data:
 
-                return []
+                raise RuntimeError(
+                    "Helius RPC error: "
+                    f"{data['error']}"
+                )
 
             return data
+
+
+async def get_wallet_signatures(
+    wallet_address: str,
+    limit: int = 20,
+) -> List[Dict[str, Any]]:
+    """
+    جلب آخر توقيعات معاملات المحفظة.
+    """
+
+    if not wallet_address:
+        return []
+
+    limit = max(
+        1,
+        min(int(limit), 100)
+    )
+
+    data = await helius_rpc(
+        "getSignaturesForAddress",
+        [
+            wallet_address,
+            {
+                "limit": limit
+            }
+        ]
+    )
+
+    result = data.get(
+        "result",
+        []
+    )
+
+    if not isinstance(
+        result,
+        list
+    ):
+        return []
+
+    return result
+
+
+async def get_transaction(
+    signature: str,
+) -> Dict[str, Any] | None:
+    """
+    جلب تفاصيل معاملة واحدة.
+    """
+
+    if not signature:
+        return None
+
+    data = await helius_rpc(
+        "getTransaction",
+        [
+            signature,
+            {
+                "encoding": "jsonParsed",
+                "commitment": "confirmed",
+                "maxSupportedTransactionVersion": 1,
+            }
+        ]
+    )
+
+    result = data.get(
+        "result"
+    )
+
+    if not isinstance(
+        result,
+        dict
+    ):
+        return None
+
+    return result
+
+
+async def get_wallet_transactions(
+    wallet_address: str,
+    limit: int = 20,
+) -> List[Dict[str, Any]]:
+    """
+    جلب آخر معاملات المحفظة عبر Helius RPC.
+
+    لا تستخدم Enhanced API.
+    """
+
+    signatures = (
+        await get_wallet_signatures(
+            wallet_address,
+            limit
+        )
+    )
+
+    if not signatures:
+        return []
+
+    transactions = []
+
+    for item in signatures:
+
+        if not isinstance(
+            item,
+            dict
+        ):
+            continue
+
+        signature = item.get(
+            "signature"
+        )
+
+        if not signature:
+            continue
+
+        try:
+
+            transaction = (
+                await get_transaction(
+                    signature
+                )
+            )
+
+        except Exception:
+
+            continue
+
+        if transaction is None:
+            continue
+
+        transaction["_signature"] = (
+            signature
+        )
+
+        transaction["_status"] = (
+            item.get("confirmationStatus")
+        )
+
+        transaction["_slot"] = (
+            item.get("slot")
+        )
+
+        transaction["_block_time"] = (
+            item.get("blockTime")
+        )
+
+        transactions.append(
+            transaction
+        )
+
+    return transactions
+
+
+def _safe_number(
+    value: Any,
+) -> float:
+
+    try:
+        return float(value)
+
+    except (
+        TypeError,
+        ValueError
+    ):
+
+        return 0.0
+
+
+def _extract_token_changes(
+    transaction: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    استخراج التغيرات الأساسية في أرصدة التوكنات.
+    """
+
+    meta = transaction.get(
+        "meta"
+    )
+
+    if not isinstance(
+        meta,
+        dict
+    ):
+        return {
+            "token_changes": 0,
+            "positive_token_changes": 0,
+            "negative_token_changes": 0,
+        }
+
+    pre = meta.get(
+        "preTokenBalances",
+        []
+    )
+
+    post = meta.get(
+        "postTokenBalances",
+        []
+    )
+
+    if not isinstance(pre, list):
+        pre = []
+
+    if not isinstance(post, list):
+        post = []
+
+    pre_balances = {}
+    post_balances = {}
+
+    for item in pre:
+
+        if not isinstance(
+            item,
+            dict
+        ):
+            continue
+
+        account_index = item.get(
+            "accountIndex"
+        )
+
+        amount = (
+            item
+            .get("uiTokenAmount", {})
+            .get("uiAmount")
+        )
+
+        pre_balances[
+            account_index
+        ] = _safe_number(amount)
+
+    for item in post:
+
+        if not isinstance(
+            item,
+            dict
+        ):
+            continue
+
+        account_index = item.get(
+            "accountIndex"
+        )
+
+        amount = (
+            item
+            .get("uiTokenAmount", {})
+            .get("uiAmount")
+        )
+
+        post_balances[
+            account_index
+        ] = _safe_number(amount)
+
+    all_indexes = set(
+        pre_balances
+    ) | set(
+        post_balances
+    )
+
+    token_changes = 0
+    positive_changes = 0
+    negative_changes = 0
+
+    for index in all_indexes:
+
+        before = pre_balances.get(
+            index,
+            0.0
+        )
+
+        after = post_balances.get(
+            index,
+            0.0
+        )
+
+        change = after - before
+
+        if abs(change) < 0.0000001:
+            continue
+
+        token_changes += 1
+
+        if change > 0:
+            positive_changes += 1
+
+        else:
+            negative_changes += 1
+
+    return {
+        "token_changes": token_changes,
+        "positive_token_changes": positive_changes,
+        "negative_token_changes": negative_changes,
+    }
+
+
+def _extract_sol_change(
+    transaction: Dict[str, Any],
+) -> float:
+    """
+    حساب التغير التقريبي في رصيد SOL
+    للحسابات المذكورة في المعاملة.
+    """
+
+    meta = transaction.get(
+        "meta"
+    )
+
+    if not isinstance(
+        meta,
+        dict
+    ):
+        return 0.0
+
+    pre = meta.get(
+        "preBalances",
+        []
+    )
+
+    post = meta.get(
+        "postBalances",
+        []
+    )
+
+    if not isinstance(pre, list):
+        pre = []
+
+    if not isinstance(post, list):
+        post = []
+
+    length = min(
+        len(pre),
+        len(post)
+    )
+
+    total_change = 0
+
+    for index in range(length):
+
+        before = _safe_number(
+            pre[index]
+        )
+
+        after = _safe_number(
+            post[index]
+        )
+
+        total_change += (
+            after - before
+        )
+
+    return total_change / 1_000_000_000
 
 
 def analyze_wallet_activity(
@@ -86,29 +432,32 @@ def analyze_wallet_activity(
     """
     تحليل أولي لنشاط المحفظة.
 
-    لا يصدر حكم Smart Money.
+    هذا ليس حكم Smart Money.
     """
 
     if not isinstance(
         transactions,
         list
     ):
-
         transactions = []
-
 
     transaction_count = len(
         transactions
     )
 
-
-    swaps = 0
-    transfers = 0
+    successful = 0
     failed = 0
 
+    token_activity = 0
+    positive_token_changes = 0
+    negative_token_changes = 0
 
-    timestamps = []
+    sol_activity = 0
 
+    slots = []
+
+    warnings = []
+    positive = []
 
     for tx in transactions:
 
@@ -118,96 +467,119 @@ def analyze_wallet_activity(
         ):
             continue
 
-
-        tx_type = str(
-            tx.get("type", "")
-        ).upper()
-
-
-        if tx_type == "SWAP":
-
-            swaps += 1
-
-
-        elif tx_type == "TRANSFER":
-
-            transfers += 1
-
-
-        if tx.get("transactionError"):
-
-            failed += 1
-
-
-        timestamp = tx.get(
-            "timestamp"
+        meta = tx.get(
+            "meta"
         )
 
-
         if isinstance(
-            timestamp,
-            (int, float)
+            meta,
+            dict
         ):
 
-            timestamps.append(
-                timestamp
+            if meta.get(
+                "err"
+            ) is None:
+
+                successful += 1
+
+            else:
+
+                failed += 1
+
+        slot = tx.get(
+            "_slot"
+        )
+
+        if isinstance(
+            slot,
+            int
+        ):
+            slots.append(slot)
+
+        token_changes = (
+            _extract_token_changes(
+                tx
             )
+        )
 
+        token_activity += (
+            token_changes[
+                "token_changes"
+            ]
+        )
 
-    swap_ratio = 0.0
+        positive_token_changes += (
+            token_changes[
+                "positive_token_changes"
+            ]
+        )
+
+        negative_token_changes += (
+            token_changes[
+                "negative_token_changes"
+            ]
+        )
+
+        sol_change = abs(
+            _extract_sol_change(
+                tx
+            )
+        )
+
+        if sol_change > 0:
+            sol_activity += 1
+
+    success_ratio = 0.0
 
     if transaction_count > 0:
 
-        swap_ratio = (
-            swaps
+        success_ratio = (
+            successful
             / transaction_count
         )
 
+    failed_ratio = 0.0
+
+    if transaction_count > 0:
+
+        failed_ratio = (
+            failed
+            / transaction_count
+        )
 
     activity_score = 0
 
-
-    # وجود معاملات فعلية
+    # حجم العينة
     if transaction_count >= 5:
-
         activity_score += 20
-
 
     if transaction_count >= 15:
-
         activity_score += 15
 
+    if transaction_count >= 20:
+        activity_score += 10
 
-    # نشاط Swap
-    if swaps >= 3:
-
-        activity_score += 20
-
-
-    if swaps >= 10:
-
+    # نشاط التوكنات
+    if token_activity >= 3:
         activity_score += 15
 
-
-    # ارتفاع نسبة عمليات التداول
-    if swap_ratio >= 0.30:
-
+    if token_activity >= 10:
         activity_score += 10
 
-
-    if swap_ratio >= 0.60:
-
+    # نشاط SOL
+    if sol_activity >= 5:
         activity_score += 10
 
+    # نجاح المعاملات
+    if success_ratio >= 0.90:
+        activity_score += 10
 
-    # فشل معاملات كثيرة يعتبر إشارة سلبية
-    if failed > 0:
+    # المعاملات الفاشلة
+    if failed_ratio > 0.30:
+        activity_score -= 20
 
-        activity_score -= min(
-            failed * 2,
-            15
-        )
-
+    elif failed_ratio > 0.10:
+        activity_score -= 10
 
     activity_score = max(
         0,
@@ -217,17 +589,11 @@ def analyze_wallet_activity(
         )
     )
 
-
-    warnings = []
-    positive = []
-
-
     if transaction_count == 0:
 
         warnings.append(
-            "لا توجد معاملات كافية لتحليل نشاط المحفظة"
+            "لا توجد معاملات كافية لتحليل المحفظة"
         )
-
 
     if transaction_count < 5:
 
@@ -235,68 +601,80 @@ def analyze_wallet_activity(
             "العينة صغيرة ولا تسمح بتقييم موثوق"
         )
 
-
-    if swaps >= 5:
-
-        positive.append(
-            f"نشاط تداول واضح: {swaps} عمليات Swap"
-        )
-
-
-    if swap_ratio >= 0.50:
-
-        positive.append(
-            "نسبة مرتفعة نسبيًا من المعاملات مرتبطة بالتداول"
-        )
-
-
     if failed > 0:
 
         warnings.append(
             f"تم رصد {failed} معاملات فاشلة"
         )
 
+    if token_activity > 0:
+
+        positive.append(
+            f"نشاط توكنات مرصود: {token_activity} تغييرات"
+        )
+
+    if positive_token_changes > 0:
+
+        positive.append(
+            f"تدفقات توكنات داخلة: {positive_token_changes}"
+        )
+
+    if negative_token_changes > 0:
+
+        positive.append(
+            f"تدفقات توكنات خارجة: {negative_token_changes}"
+        )
+
+    if success_ratio >= 0.90 and transaction_count >= 5:
+
+        positive.append(
+            "نسبة نجاح مرتفعة للمعاملات"
+        )
 
     confidence = 0
 
-
     if transaction_count >= 5:
-
-        confidence += 30
-
+        confidence += 25
 
     if transaction_count >= 15:
-
-        confidence += 30
-
+        confidence += 25
 
     if transaction_count >= 20:
-
         confidence += 20
 
+    if token_activity > 0:
+        confidence += 15
 
-    if swaps >= 5:
-
-        confidence += 20
-
+    if successful > 0:
+        confidence += 15
 
     confidence = min(
         confidence,
         100
     )
 
-
     return {
         "activity_score": activity_score,
         "confidence": confidence,
         "transaction_count": transaction_count,
-        "swap_count": swaps,
-        "transfer_count": transfers,
+        "successful_count": successful,
         "failed_count": failed,
-        "swap_ratio": round(
-            swap_ratio,
+        "success_ratio": round(
+            success_ratio,
             3
         ),
+        "failed_ratio": round(
+            failed_ratio,
+            3
+        ),
+        "token_activity": token_activity,
+        "positive_token_changes": (
+            positive_token_changes
+        ),
+        "negative_token_changes": (
+            negative_token_changes
+        ),
+        "sol_activity": sol_activity,
         "warnings": warnings,
         "positive": positive,
     }
@@ -307,7 +685,7 @@ async def analyze_wallet(
     transaction_limit: int = 20,
 ) -> Dict[str, Any]:
     """
-    جلب وتحليل نشاط محفظة واحدة.
+    جلب وتحليل محفظة واحدة.
     """
 
     transactions = (
@@ -317,14 +695,14 @@ async def analyze_wallet(
         )
     )
 
-
-    analysis = analyze_wallet_activity(
-        transactions
+    analysis = (
+        analyze_wallet_activity(
+            transactions
+        )
     )
-
 
     return {
         "wallet": wallet_address,
         "analysis": analysis,
         "transactions": transactions,
-}
+                }
