@@ -4,6 +4,10 @@ from typing import Any
 
 from data.mobula import get_token_trader_positions
 
+from market.market_intelligence import (
+    analyze_market_intelligence,
+)
+
 from intelligence.trader_intelligence import (
     analyze_traders,
 )
@@ -21,10 +25,13 @@ from scoring.composite_score import (
 )
 
 
-def _looks_like_trader(item: Any) -> bool:
-    """
-    التحقق من أن العنصر يشبه سجل متداول Mobula.
-    """
+# =========================================================
+# Trader Extraction
+# =========================================================
+
+def _looks_like_trader(
+    item: Any,
+) -> bool:
 
     if not isinstance(item, dict):
         return False
@@ -44,6 +51,7 @@ def _looks_like_trader(item: Any) -> bool:
     matches = 0
 
     for field in trader_fields:
+
         if field in item:
             matches += 1
 
@@ -53,13 +61,6 @@ def _looks_like_trader(item: Any) -> bool:
 def _find_trader_list(
     value: Any,
 ) -> list[dict[str, Any]]:
-    """
-    البحث بشكل recursive عن قائمة تحتوي
-    على سجلات المتداولين.
-
-    هذا يجعل المحرك متوافقًا مع اختلاف
-    بنية استجابة Mobula.
-    """
 
     if isinstance(value, list):
 
@@ -74,7 +75,9 @@ def _find_trader_list(
 
         for item in value:
 
-            result = _find_trader_list(item)
+            result = _find_trader_list(
+                item
+            )
 
             if result:
                 return result
@@ -83,7 +86,6 @@ def _find_trader_list(
 
     if isinstance(value, dict):
 
-        # الحالات الشائعة أولًا
         preferred_keys = [
             "data",
             "traders",
@@ -103,7 +105,6 @@ def _find_trader_list(
                 if result:
                     return result
 
-        # البحث داخل جميع القيم
         for nested_value in value.values():
 
             result = _find_trader_list(
@@ -116,42 +117,77 @@ def _find_trader_list(
     return []
 
 
+# =========================================================
+# Main Intelligence Engine
+# =========================================================
+
 async def analyze_intelligence_layers(
     mint: str,
     security_score: float,
     liquidity_score: float,
     holder_score: float,
+    pair: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """
-    تشغيل طبقات الذكاء التحليلي:
 
-    Mobula
-        ↓
-    Trader Intelligence
-        ↓
-    Smart Money
-        ↓
-    Funding Intelligence
-        ↓
-    Composite Score
-
-    لا توجد أي عمليات تداول.
-    """
-
-    result: dict[str, Any] = {
+    result = {
         "status": "ok",
         "mint": mint,
+
+        "market": None,
+
         "trader_count": 0,
         "traders": None,
+
         "smart_money": None,
+
         "funding": None,
+
         "composite": None,
+
         "warnings": [],
     }
 
-    # ==================================================
-    # 1. الحصول على بيانات المتداولين من Mobula
-    # ==================================================
+    # =====================================================
+    # 1. Market Intelligence
+    # =====================================================
+
+    if pair is not None:
+
+        try:
+
+            market_analysis = (
+                analyze_market_intelligence(
+                    pair
+                )
+            )
+
+            result["market"] = (
+                market_analysis
+            )
+
+        except Exception as error:
+
+            result["status"] = "partial"
+
+            result["warnings"].append(
+                "حدث خطأ في Market Intelligence."
+            )
+
+            result["warnings"].append(
+                str(error)
+            )
+
+    else:
+
+        result["status"] = "partial"
+
+        result["warnings"].append(
+            "لم يتم تمرير بيانات السوق إلى Market Intelligence."
+        )
+
+    # =====================================================
+    # 2. Trader Intelligence
+    # =====================================================
 
     try:
 
@@ -175,10 +211,6 @@ async def analyze_intelligence_layers(
 
         trader_response = {}
 
-    # ==================================================
-    # 2. استخراج قائمة المتداولين
-    # ==================================================
-
     traders = _find_trader_list(
         trader_response
     )
@@ -196,9 +228,9 @@ async def analyze_intelligence_layers(
             "على قائمة متداولين قابلة للتحليل."
         )
 
-    # ==================================================
-    # 3. Trader Intelligence
-    # ==================================================
+    # =====================================================
+    # 3. Trader Analysis
+    # =====================================================
 
     try:
 
@@ -228,9 +260,9 @@ async def analyze_intelligence_layers(
             "average_score": 0,
         }
 
-    # ==================================================
+    # =====================================================
     # 4. Smart Money
-    # ==================================================
+    # =====================================================
 
     try:
 
@@ -263,9 +295,9 @@ async def analyze_intelligence_layers(
             "flow": "balanced",
         }
 
-    # ==================================================
+    # =====================================================
     # 5. Funding Intelligence
-    # ==================================================
+    # =====================================================
 
     try:
 
@@ -297,32 +329,20 @@ async def analyze_intelligence_layers(
             "risk_score": 50,
         }
 
-    # ==================================================
+    # =====================================================
     # 6. Composite Score
-    # ==================================================
+    # =====================================================
 
     try:
 
         composite = (
             calculate_composite_score(
-
                 security_score=security_score,
-
                 liquidity_score=liquidity_score,
-
                 holder_score=holder_score,
-
-                trader_analysis=(
-                    trader_analysis
-                ),
-
-                smart_money_analysis=(
-                    smart_money_analysis
-                ),
-
-                funding_analysis=(
-                    funding_analysis
-                ),
+                trader_analysis=trader_analysis,
+                smart_money_analysis=smart_money_analysis,
+                funding_analysis=funding_analysis,
             )
         )
 
@@ -341,5 +361,50 @@ async def analyze_intelligence_layers(
         result["warnings"].append(
             str(error)
         )
+
+    # =====================================================
+    # 7. Market Summary Warnings
+    # =====================================================
+
+    market = result.get(
+        "market"
+    )
+
+    if isinstance(
+        market,
+        dict,
+    ):
+
+        market_warnings = market.get(
+            "warnings",
+            [],
+        )
+
+        if isinstance(
+            market_warnings,
+            list,
+        ):
+
+            result["warnings"].extend(
+                market_warnings[:10]
+            )
+
+    # =====================================================
+    # 8. Remove Duplicate Warnings
+    # =====================================================
+
+    unique_warnings = []
+
+    for warning in result["warnings"]:
+
+        if warning not in unique_warnings:
+
+            unique_warnings.append(
+                warning
+            )
+
+    result["warnings"] = (
+        unique_warnings[:15]
+    )
 
     return result
