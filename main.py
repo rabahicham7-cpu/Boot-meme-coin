@@ -14,20 +14,22 @@ from scoring.holder_score import calculate_holder_score
 from analysis_engine import analyze_intelligence_layers
 
 
-load_dotenv()
+# =========================================================
+# Environment
+# =========================================================
 
+load_dotenv()
 
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 
-
 if not TOKEN:
     raise RuntimeError(
-        "DISCORD_BOT_TOKEN غير موجود"
+        "DISCORD_BOT_TOKEN غير موجود في Environment Variables"
     )
 
 
 # =========================================================
-# Helpers
+# Formatting Helpers
 # =========================================================
 
 def format_money(value):
@@ -37,27 +39,18 @@ def format_money(value):
         return "غير متوفر"
 
 
-def format_number(value):
+def format_percent(value):
     try:
-        return f"{float(value):,.2f}"
+        return f"{float(value):.2f}%"
     except (TypeError, ValueError):
         return "غير متوفر"
 
 
-def format_percentage(value):
-    try:
-        return f"{float(value) * 100:.2f}%"
-    except (TypeError, ValueError):
-        return "غير متوفر"
-
+# =========================================================
+# GoPlus Result Extraction
+# =========================================================
 
 def get_security_result(data, mint):
-    """
-    استخراج بيانات التوكن من استجابة GoPlus.
-
-    يدعم أكثر من شكل محتمل للاستجابة.
-    """
-
     if not isinstance(data, dict):
         return None
 
@@ -131,15 +124,14 @@ def get_security_result(data, mint):
     return None
 
 
+# =========================================================
+# Discord Message Splitting
+# =========================================================
+
 async def send_long_message(
     interaction: discord.Interaction,
     message: str,
 ):
-    """
-    Discord يسمح بحد أقصى 2000 حرف للرسالة.
-    نقسم الرسالة عند الحاجة.
-    """
-
     max_length = 1900
 
     if len(message) <= max_length:
@@ -147,7 +139,6 @@ async def send_long_message(
         return
 
     chunks = []
-
     current = ""
 
     for line in message.split("\n"):
@@ -173,22 +164,276 @@ async def send_long_message(
         await interaction.followup.send(chunk)
 
 
-def build_intelligence_message(
-    intelligence,
-):
-    """
-    تحويل نتائج طبقات Intelligence إلى رسالة عربية.
-    """
+# =========================================================
+# Market Intelligence Message
+# =========================================================
+
+def build_market_message(market):
+    if not isinstance(market, dict):
+        return ""
+
+    message = (
+        "━━━━━━━━━━━━━━━━━━\n"
+        "📊 **Market Intelligence**\n\n"
+    )
+
+    market_score = market.get(
+        "market_score",
+        0,
+    )
+
+    market_state = market.get(
+        "market_state",
+        "unknown",
+    )
+
+    market_state_names = {
+        "bullish": "صاعد",
+        "constructive": "إيجابي",
+        "neutral": "محايد",
+        "weak": "ضعيف",
+        "bearish": "هابط",
+    }
+
+    market_state_ar = market_state_names.get(
+        market_state,
+        market_state,
+    )
+
+    market_confidence = market.get(
+        "confidence",
+        0,
+    )
+
+    message += (
+        f"🎯 **Market Score:** "
+        f"`{market_score:.2f}/100`\n"
+        f"🧭 **حالة السوق:** "
+        f"`{market_state_ar}`\n"
+        f"🎯 **ثقة البيانات:** "
+        f"`{market_confidence:.0f}%`\n\n"
+    )
+
+    # -----------------------------------------------------
+    # Momentum
+    # -----------------------------------------------------
+
+    momentum = market.get(
+        "momentum",
+        {},
+    )
+
+    if isinstance(momentum, dict):
+
+        momentum_score = momentum.get(
+            "score",
+            0,
+        )
+
+        momentum_state = momentum.get(
+            "state",
+            "unknown",
+        )
+
+        momentum_names = {
+            "bullish": "صاعد",
+            "developing_bullish": "يتطور إيجابيًا",
+            "bearish": "هابط",
+            "developing_bearish": "يتطور سلبيًا",
+            "mixed": "مختلط",
+        }
+
+        momentum_ar = momentum_names.get(
+            momentum_state,
+            momentum_state,
+        )
+
+        message += (
+            "📈 **Momentum Intelligence**\n"
+            f"• الدرجة: `{momentum_score:.2f}/100`\n"
+            f"• الحالة: `{momentum_ar}`\n"
+            f"• 5m: `{momentum.get('price_change_5m', 0):.2f}%`\n"
+            f"• 1h: `{momentum.get('price_change_1h', 0):.2f}%`\n"
+            f"• 6h: `{momentum.get('price_change_6h', 0):.2f}%`\n"
+            f"• 24h: `{momentum.get('price_change_24h', 0):.2f}%`\n\n"
+        )
+
+    # -----------------------------------------------------
+    # Buy / Sell Pressure
+    # -----------------------------------------------------
+
+    pressure = market.get(
+        "buy_sell_pressure",
+        {},
+    )
+
+    if isinstance(pressure, dict):
+
+        buy_ratio = pressure.get(
+            "buy_ratio",
+            0,
+        )
+
+        sell_ratio = pressure.get(
+            "sell_ratio",
+            0,
+        )
+
+        pressure_score = pressure.get(
+            "pressure_score",
+            0,
+        )
+
+        pressure_state = pressure.get(
+            "pressure",
+            "unknown",
+        )
+
+        pressure_names = {
+            "strong_buy": "شراء قوي",
+            "buy": "شراء",
+            "balanced": "متوازن",
+            "sell": "بيع",
+            "strong_sell": "بيع قوي",
+            "unknown": "غير معروف",
+        }
+
+        pressure_ar = pressure_names.get(
+            pressure_state,
+            pressure_state,
+        )
+
+        message += (
+            "⚖️ **Buy / Sell Pressure**\n"
+            f"• ضغط الشراء: `{buy_ratio * 100:.2f}%`\n"
+            f"• ضغط البيع: `{sell_ratio * 100:.2f}%`\n"
+            f"• الدرجة: `{pressure_score:.2f}/100`\n"
+            f"• الحالة: `{pressure_ar}`\n\n"
+        )
+
+    # -----------------------------------------------------
+    # Volume Quality
+    # -----------------------------------------------------
+
+    volume = market.get(
+        "volume_quality",
+        {},
+    )
+
+    if isinstance(volume, dict):
+
+        volume_score = volume.get(
+            "volume_score",
+            0,
+        )
+
+        volume_ratio = volume.get(
+            "volume_liquidity_ratio",
+            0,
+        )
+
+        quality = volume.get(
+            "quality",
+            "unknown",
+        )
+
+        quality_names = {
+            "very_low": "منخفض جدًا",
+            "low": "منخفض",
+            "healthy": "صحي",
+            "strong": "قوي",
+            "very_high": "مرتفع جدًا",
+            "extreme": "متطرف",
+            "unknown": "غير معروف",
+        }
+
+        quality_ar = quality_names.get(
+            quality,
+            quality,
+        )
+
+        message += (
+            "📊 **Volume Quality**\n"
+            f"• الدرجة: `{volume_score:.2f}/100`\n"
+            f"• Volume/Liquidity: `{volume_ratio:.2f}x`\n"
+            f"• الجودة: `{quality_ar}`\n\n"
+        )
+
+    # -----------------------------------------------------
+    # Market Structure
+    # -----------------------------------------------------
+
+    structure = market.get(
+        "market_structure",
+        {},
+    )
+
+    if isinstance(structure, dict):
+
+        structure_value = structure.get(
+            "structure",
+            "unknown",
+        )
+
+        structure_names = {
+            "bullish_alignment": "توافق صاعد",
+            "positive_alignment": "توافق إيجابي",
+            "bearish_alignment": "توافق هابط",
+            "negative_alignment": "توافق سلبي",
+            "mixed": "مختلط",
+            "unknown": "غير معروف",
+        }
+
+        structure_ar = structure_names.get(
+            structure_value,
+            structure_value,
+        )
+
+        positive_frames = structure.get(
+            "positive_frames",
+            0,
+        )
+
+        negative_frames = structure.get(
+            "negative_frames",
+            0,
+        )
+
+        message += (
+            "🧭 **Market Structure**\n"
+            f"• الهيكل: `{structure_ar}`\n"
+            f"• الفترات الإيجابية: `{positive_frames}`\n"
+            f"• الفترات السلبية: `{negative_frames}`\n\n"
+        )
+
+    return message
+
+
+# =========================================================
+# Trader / Smart Money / Funding Message
+# =========================================================
+
+def build_intelligence_message(intelligence):
+    if not isinstance(intelligence, dict):
+        return ""
+
+    traders = intelligence.get(
+        "traders"
+    ) or {}
+
+    smart_money = intelligence.get(
+        "smart_money"
+    ) or {}
+
+    funding = intelligence.get(
+        "funding"
+    ) or {}
+
+    composite = intelligence.get(
+        "composite"
+    ) or {}
 
     message = ""
-
-    if not isinstance(intelligence, dict):
-        return message
-
-    traders = intelligence.get("traders") or {}
-    smart_money = intelligence.get("smart_money") or {}
-    funding = intelligence.get("funding") or {}
-    composite = intelligence.get("composite") or {}
 
     # =====================================================
     # Trader Intelligence
@@ -229,24 +474,20 @@ def build_intelligence_message(
         0,
     )
 
-    confidence = traders.get(
+    trader_confidence = traders.get(
         "confidence",
         0,
     )
 
     message += (
         f"👥 **المتداولون المحللون:** `{trader_count}`\n"
-        f"🟢 **المتداولون الرابحون تاريخيًا:** `{profitable}`\n"
-        f"🔴 **المتداولون الخاسرون تاريخيًا:** `{losing}`\n"
+        f"🟢 **رابحون تاريخيًا:** `{profitable}`\n"
+        f"🔴 **خاسرون تاريخيًا:** `{losing}`\n"
         f"🧠 **Smart Traders:** `{smart_traders}`\n"
         f"⚠️ **Risk Traders:** `{risk_traders}`\n"
-        f"📊 **متوسط درجة المتداولين:** `{average_score:.2f}/100`\n"
-        f"🎯 **ثقة البيانات:** `{confidence:.0f}%`\n\n"
-    )
-
-    message += (
-        "⚠️ نسبة الرابحين تاريخيًا لا تعني توقعًا "
-        "للربح المستقبلي.\n\n"
+        f"📊 **متوسط الدرجة:** `{average_score:.2f}/100`\n"
+        f"🎯 **ثقة البيانات:** `{trader_confidence:.0f}%`\n\n"
+        "⚠️ الأرباح التاريخية ليست توقعًا للأداء المستقبلي.\n\n"
     )
 
     # =====================================================
@@ -309,21 +550,21 @@ def build_intelligence_message(
         flow,
     )
 
+    smart_confidence = smart_money.get(
+        "confidence",
+        0,
+    )
+
     message += (
         f"🧠 **Smart Traders:** `{smart_count}`\n"
-        f"⚠️ **Smart Traders عالية المخاطر:** "
-        f"`{risk_smart_count}`\n"
-        f"🟢 **حجم شراء Smart Money:** "
-        f"`{format_money(smart_buy_volume)}`\n"
-        f"🔴 **حجم بيع Smart Money:** "
-        f"`{format_money(smart_sell_volume)}`\n"
-        f"📈 **نسبة الشراء:** "
-        f"`{format_percentage(smart_buy_ratio)}`\n"
-        f"📉 **نسبة البيع:** "
-        f"`{format_percentage(smart_sell_ratio)}`\n"
-        f"🎯 **Smart Money Score:** "
-        f"`{smart_score}/100`\n"
-        f"🌊 **التدفق:** `{flow_ar}`\n\n"
+        f"⚠️ **عالية المخاطر:** `{risk_smart_count}`\n"
+        f"🟢 **حجم الشراء:** `{format_money(smart_buy_volume)}`\n"
+        f"🔴 **حجم البيع:** `{format_money(smart_sell_volume)}`\n"
+        f"📈 **نسبة الشراء:** `{smart_buy_ratio * 100:.2f}%`\n"
+        f"📉 **نسبة البيع:** `{smart_sell_ratio * 100:.2f}%`\n"
+        f"🎯 **Smart Money Score:** `{smart_score}/100`\n"
+        f"🌊 **التدفق:** `{flow_ar}`\n"
+        f"🎯 **ثقة البيانات:** `{smart_confidence:.0f}%`\n\n"
     )
 
     # =====================================================
@@ -335,7 +576,7 @@ def build_intelligence_message(
         "🔗 **Funding Intelligence**\n\n"
     )
 
-    total_funders = funding.get(
+    unique_funders = funding.get(
         "unique_funders",
         0,
     )
@@ -360,7 +601,10 @@ def build_intelligence_message(
         [],
     )
 
-    if isinstance(suspicious_clusters, list):
+    if isinstance(
+        suspicious_clusters,
+        list,
+    ):
         suspicious_count = len(
             suspicious_clusters
         )
@@ -378,24 +622,17 @@ def build_intelligence_message(
     )
 
     message += (
-        f"💳 **مصادر تمويل فريدة:** `{total_funders}`\n"
+        f"💳 **مصادر تمويل فريدة:** `{unique_funders}`\n"
         f"🔄 **مصادر مشتركة:** `{shared_funders}`\n"
-        f"👥 **أكبر مجموعة تمويل:** `{largest_cluster}`\n"
-        f"🚨 **مجموعات تحتاج مراجعة:** "
-        f"`{suspicious_count}`\n"
-        f"⚠️ **Funding Risk Score:** "
-        f"`{risk_score}/100`\n"
-        f"🎯 **ثقة التحليل:** "
-        f"`{funding_confidence:.0f}%`\n\n"
-    )
-
-    message += (
-        "⚠️ تشابه مصادر التمويل ليس دليلًا بحد ذاته "
-        "على التلاعب.\n\n"
+        f"👥 **أكبر مجموعة:** `{largest_cluster}`\n"
+        f"🚨 **مجموعات تحتاج مراجعة:** `{suspicious_count}`\n"
+        f"⚠️ **Funding Risk Score:** `{risk_score}/100`\n"
+        f"🎯 **ثقة البيانات:** `{funding_confidence:.0f}%`\n\n"
+        "⚠️ تشابه مصادر التمويل ليس دليلًا بحد ذاته على التلاعب.\n\n"
     )
 
     # =====================================================
-    # Composite Score
+    # Composite
     # =====================================================
 
     message += (
@@ -428,32 +665,38 @@ def build_intelligence_message(
         "غير متوفر",
     )
 
-    decision_ar = {
+    decision_names = {
         "WATCH": "مراقبة",
         "NEUTRAL": "محايد",
         "AVOID": "تجنب",
-    }.get(
+    }
+
+    decision_ar = decision_names.get(
         str(decision).upper(),
         decision,
     )
 
     message += (
-        f"📈 **Opportunity Score:** "
-        f"`{opportunity:.2f}/100`\n"
-        f"⚠️ **Risk Score:** "
-        f"`{composite_risk:.2f}/100`\n"
-        f"🎯 **Confidence:** "
-        f"`{composite_confidence:.2f}%`\n"
+        f"📈 **Opportunity Score:** `{opportunity:.2f}/100`\n"
+        f"⚠️ **Risk Score:** `{composite_risk:.2f}/100`\n"
+        f"🎯 **ثقة البيانات:** `{composite_confidence:.2f}%`\n"
         f"🏆 **Grade:** `{grade}`\n"
         f"🧭 **القرار التحليلي:** `{decision_ar}`\n\n"
     )
+
+    # =====================================================
+    # Components
+    # =====================================================
 
     components = composite.get(
         "components",
         {},
     )
 
-    if isinstance(components, dict):
+    if isinstance(
+        components,
+        dict,
+    ):
 
         message += (
             "📊 **مكونات الدرجة:**\n"
@@ -474,44 +717,21 @@ def build_intelligence_message(
                 key
             )
 
-            if value is not None:
+            if value is None:
+                continue
 
-                try:
-                    value_text = (
-                        f"{float(value):.2f}"
-                    )
-                except (
-                    TypeError,
-                    ValueError,
-                ):
-                    value_text = str(value)
-
-                message += (
-                    f"• **{label}:** "
-                    f"`{value_text}/100`\n"
+            try:
+                value_text = (
+                    f"{float(value):.2f}"
                 )
-
-        message += "\n"
-
-    # =====================================================
-    # Warnings
-    # =====================================================
-
-    warnings = intelligence.get(
-        "warnings",
-        [],
-    )
-
-    if warnings:
-
-        message += (
-            "⚠️ **تحذيرات Intelligence:**\n"
-        )
-
-        for warning in warnings[:5]:
+            except (
+                TypeError,
+                ValueError,
+            ):
+                value_text = str(value)
 
             message += (
-                f"• {warning}\n"
+                f"• **{label}:** `{value_text}/100`\n"
             )
 
         message += "\n"
@@ -548,7 +768,7 @@ class MemeIntelligenceBot(
     async def on_ready(self):
 
         print(
-            f"تم تشغيل البوت: {self.user}"
+            f"تم تشغيل البوت {self.user}"
         )
 
 
@@ -583,7 +803,7 @@ async def ping(
 @app_commands.describe(
     mint="عنوان Mint الخاص بالعملة"
 )
-async def token(
+async def token_command(
     interaction: discord.Interaction,
     mint: str,
 ):
@@ -593,7 +813,7 @@ async def token(
     try:
 
         # =================================================
-        # 1. Market Data
+        # 1. DEX Screener
         # =================================================
 
         pair = await get_token_data(
@@ -629,100 +849,88 @@ async def token(
             "غير متوفر",
         )
 
-        liquidity = pair.get(
+        liquidity_data = pair.get(
             "liquidity",
             {},
         )
 
-        volume = pair.get(
+        volume_data = pair.get(
             "volume",
             {},
         )
 
-        price_change = pair.get(
+        price_change_data = pair.get(
             "priceChange",
             {},
         )
 
-        txns = pair.get(
+        txns_data = pair.get(
             "txns",
             {},
         )
 
-        liquidity_usd = (
-            liquidity.get(
-                "usd",
-                0,
-            )
-            if isinstance(
-                liquidity,
-                dict,
-            )
-            else 0
+        if not isinstance(
+            liquidity_data,
+            dict,
+        ):
+            liquidity_data = {}
+
+        if not isinstance(
+            volume_data,
+            dict,
+        ):
+            volume_data = {}
+
+        if not isinstance(
+            price_change_data,
+            dict,
+        ):
+            price_change_data = {}
+
+        if not isinstance(
+            txns_data,
+            dict,
+        ):
+            txns_data = {}
+
+        liquidity_usd = liquidity_data.get(
+            "usd",
+            0,
         )
 
-        volume_24h = (
-            volume.get(
-                "h24",
-                0,
-            )
-            if isinstance(
-                volume,
-                dict,
-            )
-            else 0
+        volume_24h = volume_data.get(
+            "h24",
+            0,
         )
 
-        change_24h = (
-            price_change.get(
-                "h24",
-                0,
-            )
-            if isinstance(
-                price_change,
-                dict,
-            )
-            else 0
+        change_24h = price_change_data.get(
+            "h24",
+            0,
         )
 
-        txns_24h = (
-            txns.get(
-                "h24",
-                {},
-            )
-            if isinstance(
-                txns,
-                dict,
-            )
-            else {}
+        txns_24h = txns_data.get(
+            "h24",
+            {},
         )
 
-        buys = (
-            txns_24h.get(
-                "buys",
-                0,
-            )
-            if isinstance(
-                txns_24h,
-                dict,
-            )
-            else 0
+        if not isinstance(
+            txns_24h,
+            dict,
+        ):
+            txns_24h = {}
+
+        buys = txns_24h.get(
+            "buys",
+            0,
         )
 
-        sells = (
-            txns_24h.get(
-                "sells",
-                0,
-            )
-            if isinstance(
-                txns_24h,
-                dict,
-            )
-            else 0
+        sells = txns_24h.get(
+            "sells",
+            0,
         )
 
         # =================================================
-        # 2. Security
+        # 2. GoPlus Security
         # =================================================
 
         security_response = (
@@ -750,6 +958,17 @@ async def token(
                 )
             )
 
+        security_score = 0
+
+        if security_analysis:
+
+            security_score = (
+                security_analysis.get(
+                    "score",
+                    0,
+                )
+            )
+
         # =================================================
         # 4. Liquidity Score
         # =================================================
@@ -757,6 +976,13 @@ async def token(
         liquidity_analysis = (
             calculate_liquidity_score(
                 pair
+            )
+        )
+
+        liquidity_score = (
+            liquidity_analysis.get(
+                "score",
+                0,
             )
         )
 
@@ -774,31 +1000,9 @@ async def token(
                 )
             )
 
-        # =================================================
-        # 6. Scores for Intelligence Engine
-        # =================================================
-
-        security_score = 0
-
-        if security_analysis is not None:
-
-            security_score = (
-                security_analysis.get(
-                    "score",
-                    0,
-                )
-            )
-
-        liquidity_score = (
-            liquidity_analysis.get(
-                "score",
-                0,
-            )
-        )
-
         holder_score = 0
 
-        if holder_analysis is not None:
+        if holder_analysis:
 
             holder_score = (
                 holder_analysis.get(
@@ -808,7 +1012,7 @@ async def token(
             )
 
         # =================================================
-        # 7. Intelligence Engine
+        # 6. Full Intelligence Engine
         # =================================================
 
         intelligence = (
@@ -817,11 +1021,12 @@ async def token(
                 security_score=security_score,
                 liquidity_score=liquidity_score,
                 holder_score=holder_score,
+                pair=pair,
             )
         )
 
         # =================================================
-        # 8. Main Message
+        # 7. Main Header
         # =================================================
 
         message = (
@@ -832,24 +1037,21 @@ async def token(
         )
 
         # =================================================
-        # Market
+        # 8. Market Data
         # =================================================
 
         message += (
             "━━━━━━━━━━━━━━━━━━\n"
             "📊 **بيانات السوق**\n\n"
-            f"💧 **السيولة:** "
-            f"`{format_money(liquidity_usd)}`\n"
-            f"📈 **حجم 24س:** "
-            f"`{format_money(volume_24h)}`\n"
-            f"📉 **تغير 24س:** "
-            f"`{change_24h}%`\n"
+            f"💧 **السيولة:** `{format_money(liquidity_usd)}`\n"
+            f"📈 **حجم 24س:** `{format_money(volume_24h)}`\n"
+            f"📉 **تغير 24س:** `{change_24h}%`\n"
             f"🟢 **شراء 24س:** `{buys}`\n"
             f"🔴 **بيع 24س:** `{sells}`\n\n"
         )
 
         # =================================================
-        # Security
+        # 9. Security
         # =================================================
 
         if security_analysis is None:
@@ -857,21 +1059,24 @@ async def token(
             message += (
                 "━━━━━━━━━━━━━━━━━━\n"
                 "🛡️ **Security Score**\n\n"
-                "⚠️ لم يتم الحصول على بيانات "
-                "أمنية كافية.\n\n"
+                "⚠️ لا توجد بيانات أمنية كافية.\n\n"
                 "غياب البيانات لا يعني أن العملة آمنة.\n\n"
             )
 
         else:
 
-            score = security_analysis.get(
-                "score",
-                0,
+            security_score_value = (
+                security_analysis.get(
+                    "score",
+                    0,
+                )
             )
 
-            grade = security_analysis.get(
-                "grade",
-                "غير متوفر",
+            security_grade = (
+                security_analysis.get(
+                    "grade",
+                    "غير متوفر",
+                )
             )
 
             top1 = security_analysis.get(
@@ -888,19 +1093,15 @@ async def token(
                 "━━━━━━━━━━━━━━━━━━\n"
                 "🛡️ **Security Score**\n\n"
                 f"🎯 **درجة الأمان:** "
-                f"`{score}/100`\n"
-                f"📋 **التقييم:** `{grade}`\n"
-                f"👤 **أكبر حامل:** "
-                f"`{top1:.2f}%`\n"
-                f"👥 **أكبر 10 حامليْن:** "
-                f"`{top10:.2f}%`\n\n"
+                f"`{security_score_value}/100`\n"
+                f"📋 **التقييم:** `{security_grade}`\n"
+                f"👤 **أكبر حامل:** `{top1:.2f}%`\n"
+                f"👥 **أكبر 10 حامليْن:** `{top10:.2f}%`\n\n"
             )
 
-            critical = (
-                security_analysis.get(
-                    "critical",
-                    [],
-                )
+            critical = security_analysis.get(
+                "critical",
+                [],
             )
 
             if critical:
@@ -917,11 +1118,9 @@ async def token(
 
                 message += "\n"
 
-            security_warnings = (
-                security_analysis.get(
-                    "warnings",
-                    [],
-                )
+            security_warnings = security_analysis.get(
+                "warnings",
+                [],
             )
 
             if security_warnings:
@@ -939,7 +1138,7 @@ async def token(
                 message += "\n"
 
         # =================================================
-        # Liquidity
+        # 10. Liquidity
         # =================================================
 
         message += (
@@ -957,11 +1156,9 @@ async def token(
             f"`{liquidity_analysis.get('volume_liquidity_ratio', 0):.3f}x`\n\n"
         )
 
-        liquidity_warnings = (
-            liquidity_analysis.get(
-                "warnings",
-                [],
-            )
+        liquidity_warnings = liquidity_analysis.get(
+            "warnings",
+            [],
         )
 
         if liquidity_warnings:
@@ -978,29 +1175,8 @@ async def token(
 
             message += "\n"
 
-        liquidity_positive = (
-            liquidity_analysis.get(
-                "positive",
-                [],
-            )
-        )
-
-        if liquidity_positive:
-
-            message += (
-                "✅ **نقاط السيولة الإيجابية:**\n"
-            )
-
-            for item in liquidity_positive[:5]:
-
-                message += (
-                    f"• {item}\n"
-                )
-
-            message += "\n"
-
         # =================================================
-        # Holders
+        # 11. Holders
         # =================================================
 
         message += (
@@ -1011,10 +1187,8 @@ async def token(
         if holder_analysis is None:
 
             message += (
-                "⚠️ **درجة الحاملين:** "
-                "غير متوفرة\n\n"
-                "لا توجد بيانات كافية لتحليل "
-                "توزيع الحيازة.\n\n"
+                "⚠️ **درجة الحاملين:** غير متوفرة\n\n"
+                "لا توجد بيانات كافية لتحليل التوزيع.\n\n"
             )
 
         else:
@@ -1036,13 +1210,12 @@ async def token(
             message += (
                 f"🎯 **درجة الحاملين:** "
                 f"`{holder_score_value}/100`\n"
-                f"📋 **التقييم:** "
-                f"`{holder_grade}`\n"
+                f"📋 **التقييم:** `{holder_grade}`\n"
                 f"👤 **أكبر حامل:** "
                 f"`{holder_analysis.get('top1', 0):.2f}%`\n"
                 f"👥 **أكبر 10 حامليْن:** "
                 f"`{holder_analysis.get('top10', 0):.2f}%`\n"
-                f"📊 **عدد البيانات المحللة:** "
+                f"📊 **البيانات المحللة:** "
                 f"`{holder_analysis.get('holder_count', 0)}`\n"
                 f"🔒 **حاملون مقفلون:** "
                 f"`{holder_analysis.get('locked_count', 0)}`\n"
@@ -1050,17 +1223,15 @@ async def token(
                 f"`{holder_analysis.get('malicious_count', 0)}`\n\n"
             )
 
-            holder_warnings = (
-                holder_analysis.get(
-                    "warnings",
-                    [],
-                )
+            holder_warnings = holder_analysis.get(
+                "warnings",
+                [],
             )
 
             if holder_warnings:
 
                 message += (
-                    "⚠️ **مخاطر توزيع الحيازة:**\n"
+                    "⚠️ **مخاطر التوزيع:**\n"
                 )
 
                 for item in holder_warnings[:5]:
@@ -1071,29 +1242,20 @@ async def token(
 
                 message += "\n"
 
-            holder_positive = (
-                holder_analysis.get(
-                    "positive",
-                    [],
-                )
-            )
+        # =================================================
+        # 12. Market Intelligence
+        # =================================================
 
-            if holder_positive:
+        market = intelligence.get(
+            "market"
+        )
 
-                message += (
-                    "✅ **نقاط إيجابية للحاملين:**\n"
-                )
-
-                for item in holder_positive[:5]:
-
-                    message += (
-                        f"• {item}\n"
-                    )
-
-                message += "\n"
+        message += build_market_message(
+            market
+        )
 
         # =================================================
-        # Intelligence
+        # 13. Trader / Smart Money / Funding
         # =================================================
 
         message += build_intelligence_message(
@@ -1101,7 +1263,7 @@ async def token(
         )
 
         # =================================================
-        # Final Disclaimer + Market Link
+        # 14. Final Disclaimer
         # =================================================
 
         pair_url = pair.get(
@@ -1111,15 +1273,21 @@ async def token(
 
         message += (
             "━━━━━━━━━━━━━━━━━━\n"
-            "⚠️ **ملاحظة مهمة:**\n\n"
+            "⚠️ **ملاحظة مهمة**\n\n"
             "هذا النظام يقدم تحليلًا آليًا "
-            "لبيانات السوق والسلسلة.\n"
-            "الدرجات والاحتمالات ليست ضمانًا للربح "
-            "ولا توصية مالية.\n"
+            "لبيانات السوق والسلسلة.\n\n"
+            "الدرجات ليست ضمانًا للربح "
+            "ولا توصية مالية.\n\n"
+            "Market Intelligence يصف حالة السوق الحالية "
+            "ولا يمثل توقعًا مضمونًا للسعر.\n\n"
             "يجب اعتبار النتائج أداة مساعدة "
             "للبحث واتخاذ القرار.\n\n"
             f"🔗 **السوق:** {pair_url}"
         )
+
+        # =================================================
+        # 15. Send
+        # =================================================
 
         await send_long_message(
             interaction,
@@ -1137,8 +1305,7 @@ async def token(
 
             await interaction.followup.send(
                 "⚠️ **حدث خطأ أثناء تحليل العملة.**\n\n"
-                "تم تسجيل الخطأ في Railway Logs.\n"
-                "تحقق من السجلات لمعرفة السبب."
+                "تم تسجيل الخطأ في Railway Logs."
             )
 
         except Exception as followup_error:
@@ -1150,7 +1317,7 @@ async def token(
 
 
 # =========================================================
-# Start Bot
+# Start
 # =========================================================
 
 bot.run(TOKEN)
