@@ -1320,4 +1320,5 @@ async def token_command(
 # Start
 # =========================================================
 
-bot.run(TOKEN)
+if __name__ == "__main__":
+    bot.run(TOKEN)
